@@ -29,12 +29,16 @@ type ResponseStatusLine struct {
 
 type ResponseHeaders map[string]string
 
-var path string = "/home/kostushka"
-
 var infoLog *log.Logger = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime)
 var errorLog *log.Logger = log.New(os.Stderr, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 
 func main() {
+
+	if len(os.Args) == 1 {
+		log.Fatal(errors.New("Не указан путь до домашнего каталога"))
+	}
+	rootPath := os.Args[1]
+	
 	// объявляем структуру с данными будущего сервера
 	laddr := net.TCPAddr{
 		IP:   net.IPv4(127, 0, 0, 1),
@@ -69,24 +73,24 @@ func main() {
 			reqhead := make(RequestHeaders)
 
 			// получить данные запроса
-			data := getRequestData(conn)
-
-			// распарсить строку запроса в структуру, заголовки - в map
-			err := parseQueryString(&q, reqhead, data)
-
-			// отправить ответ в клиентский сокет
-			if err != nil {
-				conn.Write([]byte(err.Error()))
-				errorLog.Printf("клиенту отправлен ответ с ошибкой")
-			} else {
-				infoLog.Printf("обработан запрос от клиента %s:", conn.RemoteAddr().String())
-				fmt.Printf("%s %s %s\n", q.method, q.path, q.protocol)
-				for k, v := range reqhead {
-					fmt.Println(k, v)
+			data, err := getRequestData(conn)
+			if err == nil {
+				// распарсить строку запроса в структуру, заголовки - в map
+				err := parseQueryString(&q, reqhead, data)
+	
+				// отправить ответ в клиентский сокет
+				if err != nil {
+					conn.Write([]byte(err.Error()))
+					errorLog.Printf("клиенту отправлен ответ с ошибкой")
+				} else {
+					infoLog.Printf("обработан запрос от клиента %s:", conn.RemoteAddr().String())
+					fmt.Printf("%s %s %s\n", q.method, q.path, q.protocol)
+					for k, v := range reqhead {
+						fmt.Println(k, v)
+					}
+					writeResponse(conn, rootPath, q.path)
 				}
-				writeResponse(conn, q.path)
 			}
-
 			// закрыть клиентское соединение
 			conn.Close()
 			infoLog.Printf("клиентское соединение %s закрыто", conn.RemoteAddr().String())
@@ -94,12 +98,18 @@ func main() {
 	}
 }
 
-func parseQueryString(q *QueryString, reqhead RequestHeaders, str string) error {
+func parseQueryString(q *QueryString, reqhead RequestHeaders, data []byte) error {
 	// читаем строку из буфера
-	queryBuf := strings.Split(str, "\n")
+	var queryBuf string
+	var i int
+	for i = 0; string(data[i]) != "\n"; i++ {
+		queryBuf += string(data[i])
+	}
+	queryBuf += string(data[i])
+	i++
 
 	// парсим строку запроса
-	buf := strings.Split(queryBuf[0], " ")
+	buf := strings.Split(queryBuf, " ")
 	if len(buf) < 3 {
 		errorText := "incorrect request format: not HTTP\n"
 		errorLog.Printf(errorText)
@@ -110,37 +120,52 @@ func parseQueryString(q *QueryString, reqhead RequestHeaders, str string) error 
 	q.protocol = buf[2]
 
 	// парсим заголовки
-	for i := 1; queryBuf[i] != ""; i++ {
-		buf := strings.Split(queryBuf[i], ": ")
+	var prev byte
+	var str string
+	for {
+		for string(data[i]) != "\n" {
+			str += string(data[i])
+			i++
+		}
+		if data[i] == prev && prev == '\n' || data[i] == '\n' && prev == '\r'{
+			break
+		}
+		str += string(data[i])
+		buf := strings.Split(str, ": ")
 		reqhead[buf[0]] = buf[1]
+		prev = data[i]
+		i++
 	}
-
 	return nil
 }
 
-func getRequestData(conn *net.TCPConn) string {
+func getRequestData(conn *net.TCPConn) ([]byte, error) {
 	// буфер для чтения из клиентского сокета
 	buf := make([]byte, 4096)
 
-	var data string
+	var data []byte
 	// пока клиентский сокет пишет, читаем в буфер
 	for {
 		_, err := conn.Read(buf)
 
 		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку, так как не успели вычитать все данные, а клиент уже закрыл сокет
 		if err != nil {
-			log.Fatal(err)
+			if err == io.EOF {
+				infoLog.Printf("Клиент закрыл соединение: %v", err)
+				return nil, err
+			} else {
+				log.Fatal(err)
+			}
 		}
-
 		// по возвращении клиентским сокетом пустой строки, перестаем читать
-		if strings.Contains(string(buf), "\n\n") {
-			data += string(buf)
-			return data
+		if strings.Contains(string(buf), "\r\n\r\n") || strings.Contains(string(buf), "\n\n"){
+			data = append(data, buf...)
+			return data, nil
 		}
 
 		// если размер данных больше, чем размер буфера
-		if len(buf) >= cap(buf) {
-			data += string(buf)
+		if len(buf) == cap(buf) {
+			data = append(data, buf...)
 			buf = make([]byte, len(buf))
 		}
 	}
@@ -152,7 +177,7 @@ type ResponseData struct {
 	size   string
 }
 
-func writeResponse(conn *net.TCPConn, queryPath string) {
+func writeResponse(conn *net.TCPConn, path, queryPath string) {
 	respStatus := ResponseStatusLine{}
 	respHeaders := make(ResponseHeaders)
 
@@ -185,6 +210,23 @@ func writeResponse(conn *net.TCPConn, queryPath string) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		// файл не должен быть каталогом
+		if fi.IsDir() {
+			errorLog.Printf("%v is a directory", fi.Name())
+			data := ResponseData{
+				status: "400",
+				phrase: "Bad Request",
+			}
+			// создаем ответ сервера для клиента
+			createResponse(&respStatus, respHeaders, data)
+			// пишем ответ в клиентский сокет
+			err := writeToConn(conn, respStatus, respHeaders)
+			if err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+		
 		data := ResponseData{
 			status: "200",
 			phrase: "OK",
@@ -196,7 +238,11 @@ func writeResponse(conn *net.TCPConn, queryPath string) {
 			log.Fatal(err)
 		}
 		// читаем файл
-		fileBuf := make([]byte, 4096)
+		fileBuf := make([]byte, fi.Size()) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
+										   // curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:
+										   // Warning: Binary output can mess up your terminal. Use "--output -" to tell 
+										   // Warning: curl to output it to your terminal anyway, or consider "--output 
+										   // Warning: <FILE>" to save to a file.
 		for {
 			_, err := f.Read(fileBuf)
 			if err == io.EOF {
@@ -223,6 +269,7 @@ func createResponse(respStatus *ResponseStatusLine, respHeaders ResponseHeaders,
 	if data.size != "" {
 		respHeaders["Size:"] = data.size
 	}
+	respHeaders["Content-Type:"] = "text/plain; charset=utf-8"
 }
 
 func writeToConn(conn *net.TCPConn, respStatus ResponseStatusLine, respHeaders ResponseHeaders) error {

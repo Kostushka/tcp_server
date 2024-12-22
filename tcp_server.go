@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -33,10 +35,17 @@ type ResponseStatusLine struct {
 type ResponseHeaders []string
 
 const (
+	StatusOK                  = 200
 	StatusBadRequest          = 400
 	StatusForbidden           = 403
 	StatusNotFound            = 404
 	StatusInternalServerError = 500
+)
+
+var (
+	errNoRootDir      = errors.New("Не указан путь до *корневого* каталога")
+	errInvalidAddr    = errors.New("Указан некорректный IP-адрес")
+	errInvalidHttpReq = errors.New("incorrect request format: not HTTP")
 )
 
 var infoLog *log.Logger = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime)
@@ -45,29 +54,32 @@ var errorLog *log.Logger = log.New(os.Stderr, "ERROR: ", log.Ldate|log.Ltime|log
 func main() {
 
 	// должен быть указан путь до домашнего каталога
-	rootPath := flag.String("path", "", "a path to home directory")
+	var rootPath string
+	flag.StringVar(&rootPath, "path", "", "a path to home directory")
 	// должен быть указан адрес, на котором будет запущен сервер
-	listenAddress := flag.String("IP", "127.0.0.1", "a listening address")
+	var listenAddress string
+	flag.StringVar(&listenAddress, "IP", "127.0.0.1", "a listening address")
 	// должен быть указан порт, на которм сервер будет принимаь запросы на соединение
-	port := flag.Int("port", 5000, "a port")
+	var port int
+	flag.IntVar(&port, "port", 5000, "a port")
 
 	flag.Parse()
 
 	// должен быть указан путь до домашнего каталога
-	if *rootPath == "" {
-		log.Fatal(errors.New("Не указан путь до домашнего каталога"))
+	if rootPath == "" {
+		log.Fatal(errNoRootDir)
 	}
 
 	// IP адрес должен быть корректным
 	var addr net.IP
-	if addr = net.ParseIP(*listenAddress); addr == nil {
-		log.Fatal(errors.New("Указан некорректный IP-адрес"))
+	if addr = net.ParseIP(listenAddress); addr == nil {
+		log.Fatal(errInvalidAddr)
 	}
 
 	// объявляем структуру с данными будущего сервера
 	laddr := net.TCPAddr{
 		IP:   addr,
-		Port: *port,
+		Port: port,
 	}
 
 	// получаем структуру с методами для работы с соединениями
@@ -89,24 +101,29 @@ func main() {
 
 		// обрабатываем каждое клиентское соединение в отдельной горутине
 		go func(conn *net.TCPConn) {
-			processingConn(conn, *rootPath)
+			processingConn(conn, rootPath)
 		}(conn)
 	}
 }
 
+// обрабатываем клиентское соединение
 func processingConn(conn *net.TCPConn, rootPath string) {
-
 	defer func() {
 		// закрыть клиентское соединение
-		conn.Close()
-		infoLog.Printf("клиентское соединение %s закрыто", conn.RemoteAddr().String())
+		err := conn.Close()
+		if err != nil {
+			errorLog.Println(err)
+		} else {
+			infoLog.Printf("клиентское соединение %s закрыто", conn.RemoteAddr().String())
+		}
 	}()
 
 	infoLog.Printf("начинается работа с клиентским сокетом %s", conn.RemoteAddr().String())
 
 	// получить данные запроса
 	data, err := getRequestData(conn)
-	// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку, так как не успели вычитать все данные, а клиент уже закрыл сокет
+	// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+	// так как не успели вычитать все данные, а клиент уже закрыл сокет
 	if err != nil {
 		errorLog.Println(err)
 		return
@@ -118,7 +135,7 @@ func processingConn(conn *net.TCPConn, rootPath string) {
 	if err != nil {
 		errorLog.Println(err)
 		// некорректный запрос
-		data := createResponseData(StatusBadRequest, "")
+		data := createResponseData(StatusBadRequest, "", "")
 		// создаем ответ сервера для клиента
 		err := writeResponseHeader(conn, data)
 		if err != nil {
@@ -128,60 +145,87 @@ func processingConn(conn *net.TCPConn, rootPath string) {
 	}
 
 	// логируем клиентские заголовки
-	infoLog.Println("обработан запрос от клиента:")
+	infoLog.Println("распарсили данные, поступившие от клиента:")
 
 	infoLog.Printf("\"%v %v %v\" %v %v \"%v\"\n",
 		q.method, q.path, q.protocol, conn.RemoteAddr().String(), reqhead["Host"], reqhead["User-Agent"])
 
 	// отправить ответ клиенту
-	err = writeResponse(conn, rootPath, q.path)
+	err = openFile(conn, rootPath, q.path)
 	if err != nil {
 		errorLog.Println(err)
 	}
 }
 
+// парсим строку запроса в структуру, заголовки - в map
 func parseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
 	// структура с данными строки запроса HTTP-протокола
 	q := QueryString{}
 	// map с заголовками запроса
-	reqhead := make(RequestHeaders)
+	reqhead := make(RequestHeaders, 5)
 
 	// читаем строку из буфера
-	var queryBuf string
+	var queryBuf strings.Builder
 	var i int
 	// в конце строки ожидаем либо \r\n, либо \n
 	for i = 0; string(data[i]) != "\r" && string(data[i]) != "\n"; i++ {
-		queryBuf += string(data[i])
+		if err := queryBuf.WriteByte(data[i]); err != nil {
+			return nil, nil, err
+		}
 	}
+	// если в конце строки \r\n - пропускаем два символа для перехода на новую строку
 	if string(data[i]) == "\r" {
 		i++
 	}
 	i++
 
 	// парсим строку запроса
-	buf := strings.Split(queryBuf, " ")
+	buf := strings.Split(myTrimSpace(queryBuf.String()), " ")
 	if len(buf) < 3 {
-		return &q, reqhead, errors.New("incorrect request format: not HTTP")
+		return nil, nil, errInvalidHttpReq
+	}
+	// декодируем path на случай, если он в кириллице
+	convertPath, err := url.QueryUnescape(buf[1])
+	if err != nil {
+		return nil, nil, err
 	}
 	q.method = buf[0]
-	q.path = buf[1]
+	q.path = convertPath
 	q.protocol = buf[2]
 
 	// парсим заголовки
-	headerString := data[i:]
-	buf = strings.Split(string(headerString), "\r\n")
+	headerBuf := data[i:]
+	buf = strings.Split(string(headerBuf), "\r\n")
 	// если в конце строки не \r\n, а \n
 	if len(buf) == 1 {
-		buf = strings.Split(string(headerString), "\n")
+		buf = strings.Split(string(headerBuf), "\n")
 	}
 	// в конце после заголовков ожидаем пустую строку
 	for j := 0; buf[j] != ""; j++ {
-		hb := strings.Split(buf[j], ": ")
-		reqhead[hb[0]] = hb[1]
+		hb := strings.Split(buf[j], ":")
+		reqhead[hb[0]] = strings.TrimSpace(hb[1])
 	}
 	return &q, reqhead, nil
 }
 
+// учитываем, что строка запроса может содержать более одного пробела, например:
+// GET        /                HTTP/1.1
+// удаляем лишние пробелы
+func myTrimSpace(str string) string {
+	var prev string
+	var i int
+	var res string
+	for ; i < len(str); i++ {
+		if string(str[i]) == prev && prev == " " {
+			continue
+		}
+		prev = string(str[i])
+		res += string(str[i])
+	}
+	return res
+}
+
+// получаем данные запроса
 func getRequestData(conn *net.TCPConn) ([]byte, error) {
 	// буфер для чтения из клиентского сокета
 	buf := make([]byte, 4096)
@@ -211,68 +255,132 @@ type ResponseData struct {
 	status string
 	phrase string
 	size   string
+	name   string
 }
 
-func writeResponse(conn *net.TCPConn, path, queryPath string) error {
+func openFile(conn *net.TCPConn, rootPath, queryPath string) error {
 	// открываем запрашиваемый файл
-	f, err := os.Open(path + queryPath)
+	f, err := os.Open(rootPath + queryPath)
 
 	if err != nil {
 		// файл должен быть, иначе 404
 		if errors.Is(err, fs.ErrNotExist) {
 			errorLog.Println(err)
 			// формируем данные для ответа: файл не найден
-			data := createResponseData(StatusNotFound, "")
+			data := createResponseData(StatusNotFound, "", "")
 			// создаем ответ сервера для клиента
 			return writeResponseHeader(conn, data)
 		}
 		// файл не был открыт - 500
-		data := createResponseData(StatusInternalServerError, "")
+		data := createResponseData(StatusInternalServerError, "", "")
 		// создаем ответ сервера для клиента
 		return writeResponseHeader(conn, data)
 	}
 	defer f.Close()
 
-	infoLog.Printf("определен путь до файла %s:", path+queryPath)
+	infoLog.Printf("определен путь до файла %s:", rootPath+queryPath)
+	// проверить файл
+	fi, err := checkFile(conn, f, rootPath, queryPath)
+	if err != nil {
+		return fmt.Errorf("файл не готов к отправке: %w", err)
+	}
 	// отправить файл клиенту
-	return sendFile(conn, f)
+	err = sendFile(conn, f, fi)
+	if err != nil {
+		return fmt.Errorf("файл не был отправлен клиенту: %w", err)
+	}
+	return nil
 }
 
-func createResponseData(code int, size string) *ResponseData {
+func createResponseData(code int, size, name string) *ResponseData {
 	// заполняем структуру данных для формированя ответа клиенту
 	return &ResponseData{
 		status: strconv.Itoa(code),
 		phrase: http.StatusText(code),
 		size:   size,
+		name:   name,
 	}
 }
 
-func sendFile(conn *net.TCPConn, f *os.File) error {
+func checkFile(w io.Writer, f *os.File, rootPath, queryPath string) (fs.FileInfo, error) {
+	// получить информацию о файле
 	fi, err := f.Stat()
 	if err != nil {
 		// файл не отправлен - 500
-		data := createResponseData(StatusInternalServerError, "")
-		return writeResponseHeader(conn, data)
+		data := createResponseData(StatusInternalServerError, "", "")
+		return nil, writeResponseHeader(w, data)
 	}
-	// файл не должен быть каталогом, иначе 403
+	// если файл - каталог, выводим его содержимое
 	if fi.IsDir() {
-		errIsDir := fmt.Errorf("%v is a directory", fi.Name())
-
-		data := createResponseData(StatusForbidden, "")
-		// создаем ответ сервера для клиента
-		err := writeResponseHeader(conn, data)
+		// отправляем заголовки
+		data := createResponseData(StatusOK, strconv.FormatInt(fi.Size(), 10), "")
+		err = writeResponseHeader(w, data)
 		if err != nil {
-			return fmt.Errorf("файл не был отправлен клиенту: %v: %v", err, errIsDir)
+			return nil, err
 		}
-		return fmt.Errorf("файл не был отправлен клиенту: %v", errIsDir)
+		// выводим содержимое каталога
+		err := showDir(w, rootPath, queryPath)
+		if err != nil {
+			return nil, err
+		}
+		infoLog.Printf("клиенту отправлен html файл с содержимым %s", rootPath+queryPath)
+		return nil, fmt.Errorf("файл %s: is a directory", rootPath+queryPath)
+	}
+	// отправляем клиенту заголовки
+	data := createResponseData(StatusOK, strconv.FormatInt(fi.Size(), 10), fi.Name())
+	if err = writeResponseHeader(w, data); err != nil {
+		return nil, err
 	}
 	// файл готов к отправке
-	data := createResponseData(200, strconv.FormatInt(fi.Size(), 10))
-	// создаем ответ сервера для клиента
-	if err = writeResponseHeader(conn, data); err != nil {
+	return fi, nil
+}
+
+func showDir(w io.Writer, rootPath, queryPath string) error {
+	type args struct {
+		RootPath string
+		DirName  string
+		Files    []string
+	}
+	// получаем файлы, находящиеся в каталоге
+	files, err := os.ReadDir(rootPath + queryPath)
+	if err != nil {
+		errorLog.Println(err)
 		return err
 	}
+	// получаем имена файлов
+	names := []string{}
+	for _, v := range files {
+		if strings.HasPrefix(v.Name(), ".") {
+			continue
+		}
+		names = append(names, v.Name())
+	}
 
+	// используем шаблон для отображения имен файлов
+	tmpl, err := os.ReadFile("./html/filesPage.html")
+	if err != nil {
+		errorLog.Println(err)
+		return err
+	}
+	t, err := template.New("index").Parse(string(tmpl))
+	if err != nil {
+		errorLog.Println(err)
+		return err
+	}
+	// если запрос идет на корень, то оставляем переменную с путем запроса пустой, 
+	// так как по умолчанию в html шаблоне путь запроса до директории и имена содержащихся в ней файлов/каталогов разделяет слеш
+	if queryPath == "/" {
+		queryPath = ""
+	}
+	
+	return t.Execute(w, args{
+		RootPath: rootPath + queryPath,
+		DirName:  queryPath,
+		Files:    names,
+	})
+}
+
+func sendFile(w io.Writer, f *os.File, fi fs.FileInfo) error {
 	// читаем файл
 	fileBuf := make([]byte, fi.Size()) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
 	// curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:
@@ -289,7 +397,7 @@ func sendFile(conn *net.TCPConn, f *os.File) error {
 			return err
 		}
 		// записать содержимое буфера в клиентский сокет
-		n, err := conn.Write(fileBuf)
+		n, err := w.Write(fileBuf)
 		if n != len(fileBuf) {
 			return fmt.Errorf("ошибка записи: буфер содержит %v байт, а в клиентский сокет записано %v байт", len(fileBuf), n)
 		}
@@ -301,7 +409,7 @@ func sendFile(conn *net.TCPConn, f *os.File) error {
 	return nil
 }
 
-func writeResponseHeader(conn *net.TCPConn, data *ResponseData) error {
+func writeResponseHeader(w io.Writer, data *ResponseData) error {
 	respStatus := ResponseStatusLine{}
 	respHeaders := ResponseHeaders{}
 
@@ -315,38 +423,57 @@ func writeResponseHeader(conn *net.TCPConn, data *ResponseData) error {
 	if data.size != "" {
 		respHeaders = append(respHeaders, "Size: "+data.size)
 	}
-	respHeaders = append(respHeaders, "Content-Type:: text/plain; charset=utf-8")
+	switch {
+	case strings.Contains(data.name, ".pdf"):
+		respHeaders = append(respHeaders, "Content-Type: application/pdf")
+	case strings.Contains(data.name, ".html"):
+		respHeaders = append(respHeaders, "Content-Type: text/html")
+	case strings.Contains(data.name, ".jpg"):
+		respHeaders = append(respHeaders, "Content-Type: image/jpeg")
+	case strings.Contains(data.name, ".odt"):
+		respHeaders = append(respHeaders, "Content-Type: application/vnd.oasis.opendocument.text; charset=utf-8")
+	case strings.Contains(data.name, ".txt") || strings.Contains(data.name, ".go"):
+		respHeaders = append(respHeaders, "Content-Type: text/plain; charset=utf-8")
+	default:
+		respHeaders = append(respHeaders, "Content-Type: charset=utf-8")
+	}
 
 	// пишем ответ в клиентский сокет
-	return writeToConn(conn, respStatus, respHeaders)
+	return writeToConn(w, respStatus, respHeaders)
 }
 
-func writeToConn(conn *net.TCPConn, respStatus ResponseStatusLine, respHeaders ResponseHeaders) error {
+func writeToConn(w io.Writer, respStatus ResponseStatusLine, respHeaders ResponseHeaders) error {
+	// сформировать статусную строку
+	var statusString strings.Builder
+	
+	fmt.Fprintf(&statusString, "%s %s %s\n", respStatus.version, respStatus.status, respStatus.phrase)
+	
 	// записать в клиентский сокет статусную строку
-	statusString := strings.Join([]string{respStatus.version, respStatus.status, respStatus.phrase}, " ") + "\n"
-	n, err := conn.Write([]byte(statusString))
-	if n != len(statusString) {
-		return fmt.Errorf("ошибка записи: строка содержит %v байт, а в клиентский сокет записано %v байт", len(statusString), n)
+	n, err := w.Write([]byte(statusString.String()))
+	if n != statusString.Len() {
+		return fmt.Errorf("ошибка записи: строка содержит %v байт, а в клиентский сокет записано %v байт", statusString.Len(), n)
 	}
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s %s %s\n", respStatus.version, respStatus.status, respStatus.phrase)
+	infoLog.Printf("%s", statusString.String())
 
-	// записать в клиентский сокет заголовки ответа
+	// сформировать буфер с заголовками ответа
+	var headers strings.Builder
 	for _, v := range respHeaders {
 		header := v + "\n"
-		n, err := conn.Write([]byte(header))
+		n, err := headers.WriteString(header)
 		if n != len(header) {
-			return fmt.Errorf("ошибка записи: заголовок содержит %v байт, а в клиентский сокет записано %v байт", len(header), n)
+			return fmt.Errorf("ошибка записи: заголовок содержит %v байт, а в буфер записано %v байт", len(header), n)
 		}
-		fmt.Println(v)
 		if err != nil {
 			return err
 		}
+		infoLog.Println(v)
 	}
-	n, err = conn.Write([]byte("\n"))
-	if n != len("\n") {
+	// записать в клиентский сокет заголовки ответа
+	n, err = w.Write([]byte(headers.String() + "\n"))
+	if n != headers.Len()+len("\n") {
 		return fmt.Errorf("ошибка записи: строка содержит %v байт, а в клиентский сокет записано %v байт", len("\n"), n)
 	}
 	if err != nil {

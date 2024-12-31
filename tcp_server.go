@@ -9,10 +9,12 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +53,8 @@ var (
 var infoLog *log.Logger = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime)
 var errorLog *log.Logger = log.New(os.Stderr, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 
+var templateDirNames []byte
+
 func main() {
 
 	// должен быть указан путь до домашнего каталога
@@ -76,6 +80,13 @@ func main() {
 		log.Fatal(errInvalidAddr)
 	}
 
+	// парсим шаблон для отображения имен файлов
+	t, err := os.ReadFile("./html/filesPage.html")
+	if err != nil {
+		log.Fatal(err)
+	}
+	templateDirNames = t
+
 	// объявляем структуру с данными будущего сервера
 	laddr := net.TCPAddr{
 		IP:   addr,
@@ -100,10 +111,14 @@ func main() {
 		infoLog.Printf("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
 
 		// обрабатываем каждое клиентское соединение в отдельной горутине
-		go func(conn *net.TCPConn) {
-			processingConn(conn, rootPath)
-		}(conn)
+		go processingConn(conn, rootPath)
 	}
+}
+
+type StatusData struct {
+	code int
+	size int64
+	name string
 }
 
 // обрабатываем клиентское соединение
@@ -135,12 +150,12 @@ func processingConn(conn *net.TCPConn, rootPath string) {
 	if err != nil {
 		errorLog.Println(err)
 		// некорректный запрос
-		data := createResponseData(StatusBadRequest, "", "")
-		// создаем ответ сервера для клиента
-		err := writeResponseHeader(conn, data)
-		if err != nil {
-			errorLog.Println(err)
-		}
+		err = sendResponseHeader(conn, &StatusData{
+			code: StatusBadRequest,
+			size: 0,
+			name: "",
+		}, err)
+		errorLog.Println(err)
 		return
 	}
 
@@ -151,7 +166,7 @@ func processingConn(conn *net.TCPConn, rootPath string) {
 		q.method, q.path, q.protocol, conn.RemoteAddr().String(), reqhead["Host"], reqhead["User-Agent"])
 
 	// отправить ответ клиенту
-	err = openFile(conn, rootPath, q.path)
+	err = workingWithFile(conn, rootPath, q.path)
 	if err != nil {
 		errorLog.Println(err)
 	}
@@ -184,7 +199,7 @@ func parseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
 	if len(buf) < 3 {
 		return nil, nil, errInvalidHttpReq
 	}
-	// декодируем path на случай, если он в кириллице
+	// декодируем path на случай, если он не в латинице
 	convertPath, err := url.QueryUnescape(buf[1])
 	if err != nil {
 		return nil, nil, err
@@ -214,15 +229,15 @@ func parseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
 func myTrimSpace(str string) string {
 	var prev string
 	var i int
-	var res string
+	var res strings.Builder
 	for ; i < len(str); i++ {
 		if string(str[i]) == prev && prev == " " {
 			continue
 		}
 		prev = string(str[i])
-		res += string(str[i])
+		res.WriteByte(str[i])
 	}
-	return res
+	return res.String()
 }
 
 // получаем данные запроса
@@ -258,81 +273,125 @@ type ResponseData struct {
 	name   string
 }
 
-func openFile(conn *net.TCPConn, rootPath, queryPath string) error {
+func sendResponseHeader(w io.Writer, statusData *StatusData, mainError error) error {
+	// формируем данные для ответа
+	data := createResponseData(statusData)
+
+	// отправляем заголовки клиенту
+	if err := writeResponseHeader(w, data); err != nil {
+		return fmt.Errorf("%w: %w", err, mainError)
+	}
+	return mainError
+}
+
+func workingWithFile(conn *net.TCPConn, rootPath, queryPath string) error {
+	path := filepath.Join(rootPath, queryPath)
+
 	// открываем запрашиваемый файл
-	f, err := os.Open(rootPath + queryPath)
-
+	f, err := openFile(conn, path)
 	if err != nil {
-		// файл должен быть, иначе 404
-		if errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// закрыть файл
+	defer func() {
+		err := f.Close()
+		if err != nil {
 			errorLog.Println(err)
-			// формируем данные для ответа: файл не найден
-			data := createResponseData(StatusNotFound, "", "")
-			// создаем ответ сервера для клиента
-			return writeResponseHeader(conn, data)
 		}
-		// файл не был открыт - 500
-		data := createResponseData(StatusInternalServerError, "", "")
-		// создаем ответ сервера для клиента
-		return writeResponseHeader(conn, data)
-	}
-	defer f.Close()
+	}()
 
-	infoLog.Printf("определен путь до файла %s:", rootPath+queryPath)
-	// проверить файл
-	fi, err := checkFile(conn, f, rootPath, queryPath)
+	infoLog.Printf("определен путь до файла %s:", path)
+
+	// получить информацию о файле
+	fi, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("файл не готов к отправке: %w", err)
+		// файл не отправлен - 500
+		err = sendResponseHeader(conn, &StatusData{
+			code: StatusInternalServerError,
+			size: 0,
+			name: "",
+		}, err)
+		return fmt.Errorf("файл %s не готов к отправке: %w", path, err)
 	}
+
+	// если файл - каталог, выводим его содержимое
+	if fi.IsDir() {
+		infoLog.Printf("файл %s: is a directory", path)
+		// выводим содержимое каталога
+		if err := showDir(conn, rootPath, queryPath); err != nil {
+			// содержимое каталога не отправлено - 500
+			err = sendResponseHeader(conn, &StatusData{
+				code: StatusInternalServerError,
+				size: 0,
+				name: "",
+			}, err)
+			return fmt.Errorf("содержимое каталога %s не готово к отправке: %w", path, err)
+		}
+		infoLog.Printf("клиенту отправлен html файл с содержимым %s", path)
+		return nil
+	}
+
+	// отправляем клиенту заголовки
+	err = sendResponseHeader(conn, &StatusData{
+		code: StatusOK,
+		size: fi.Size(),
+		name: fi.Name(),
+	}, nil)
+
+	if err != nil {
+		return err
+	}
+
 	// отправить файл клиенту
-	err = sendFile(conn, f, fi)
+	err = sendFile(conn, f, fi.Size())
 	if err != nil {
 		return fmt.Errorf("файл не был отправлен клиенту: %w", err)
 	}
 	return nil
 }
 
-func createResponseData(code int, size, name string) *ResponseData {
-	// заполняем структуру данных для формированя ответа клиенту
-	return &ResponseData{
-		status: strconv.Itoa(code),
-		phrase: http.StatusText(code),
-		size:   size,
-		name:   name,
-	}
-}
+func openFile(w *net.TCPConn, path string) (*os.File, error) {
+	// открываем запрашиваемый файл
+	f, err := os.Open(path)
 
-func checkFile(w io.Writer, f *os.File, rootPath, queryPath string) (fs.FileInfo, error) {
-	// получить информацию о файле
-	fi, err := f.Stat()
 	if err != nil {
-		// файл не отправлен - 500
-		data := createResponseData(StatusInternalServerError, "", "")
-		return nil, writeResponseHeader(w, data)
-	}
-	// если файл - каталог, выводим его содержимое
-	if fi.IsDir() {
-		// отправляем заголовки
-		data := createResponseData(StatusOK, strconv.FormatInt(fi.Size(), 10), "")
-		err = writeResponseHeader(w, data)
-		if err != nil {
+		// файл должен быть, иначе 404
+		if errors.Is(err, fs.ErrNotExist) {
+			// создаем ответ сервера для клиента: файл не найден
+			err = sendResponseHeader(w, &StatusData{
+				code: StatusNotFound,
+				size: 0,
+				name: ""}, err)
 			return nil, err
 		}
-		// выводим содержимое каталога
-		err := showDir(w, rootPath, queryPath)
-		if err != nil {
+		// файл должен быть доступен, иначе 403
+		if errors.Is(err, fs.ErrPermission) {
+			// создаем ответ сервера для клиента: доступ к файлу запрещен
+			err = sendResponseHeader(w, &StatusData{
+				code: StatusForbidden,
+				size: 0,
+				name: ""}, err)
 			return nil, err
 		}
-		infoLog.Printf("клиенту отправлен html файл с содержимым %s", rootPath+queryPath)
-		return nil, fmt.Errorf("файл %s: is a directory", rootPath+queryPath)
-	}
-	// отправляем клиенту заголовки
-	data := createResponseData(StatusOK, strconv.FormatInt(fi.Size(), 10), fi.Name())
-	if err = writeResponseHeader(w, data); err != nil {
+		// файл не был открыт - 500
+		// создаем ответ сервера для клиента: ошибка со стороны сервера
+		err = sendResponseHeader(w, &StatusData{
+			code: StatusInternalServerError,
+			size: 0,
+			name: ""}, err)
 		return nil, err
 	}
-	// файл готов к отправке
-	return fi, nil
+	return f, nil
+}
+
+func createResponseData(data *StatusData) *ResponseData {
+	// заполняем структуру данных для формированя ответа клиенту
+	return &ResponseData{
+		status: strconv.Itoa(data.code),
+		phrase: http.StatusText(data.code),
+		size:   strconv.FormatInt(data.size, 10),
+		name:   data.name,
+	}
 }
 
 func showDir(w io.Writer, rootPath, queryPath string) error {
@@ -341,12 +400,14 @@ func showDir(w io.Writer, rootPath, queryPath string) error {
 		DirName  string
 		Files    []string
 	}
+
 	// получаем файлы, находящиеся в каталоге
-	files, err := os.ReadDir(rootPath + queryPath)
+	files, err := os.ReadDir(filepath.Join(rootPath, queryPath))
 	if err != nil {
 		errorLog.Println(err)
 		return err
 	}
+
 	// получаем имена файлов
 	names := []string{}
 	for _, v := range files {
@@ -357,32 +418,46 @@ func showDir(w io.Writer, rootPath, queryPath string) error {
 	}
 
 	// используем шаблон для отображения имен файлов
-	tmpl, err := os.ReadFile("./html/filesPage.html")
+	t, err := template.New("index").Parse(string(templateDirNames))
 	if err != nil {
 		errorLog.Println(err)
 		return err
 	}
-	t, err := template.New("index").Parse(string(tmpl))
-	if err != nil {
-		errorLog.Println(err)
-		return err
-	}
-	// если запрос идет на корень, то оставляем переменную с путем запроса пустой, 
+	// если запрос идет на корень, то оставляем переменную с путем запроса пустой,
 	// так как по умолчанию в html шаблоне путь запроса до директории и имена содержащихся в ней файлов/каталогов разделяет слеш
 	if queryPath == "/" {
 		queryPath = ""
 	}
-	
-	return t.Execute(w, args{
-		RootPath: rootPath + queryPath,
+
+	buf := new(bytes.Buffer)
+	// применяем шаблон к структуре данных, пишем выходные данные в буфер
+	err = t.Execute(buf, args{
+		RootPath: filepath.Join(rootPath, queryPath),
 		DirName:  queryPath,
 		Files:    names,
 	})
+	if err != nil {
+		return err
+	}
+
+	// отправляем заголовки
+	err = sendResponseHeader(w, &StatusData{
+		code: StatusOK,
+		size: int64(buf.Len()),
+		name: ""}, nil)
+
+	if err != nil {
+		return err
+	}
+
+	// записать содержимое буфера в клиентский сокет
+	_, err = w.Write(buf.Bytes())
+	return err
 }
 
-func sendFile(w io.Writer, f *os.File, fi fs.FileInfo) error {
+func sendFile(w io.Writer, f *os.File, fileSize int64) error {
 	// читаем файл
-	fileBuf := make([]byte, fi.Size()) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
+	fileBuf := make([]byte, fileSize) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
 	// curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:
 	// Warning: Binary output can mess up your terminal. Use "--output -" to tell
 	// Warning: curl to output it to your terminal anyway, or consider "--output
@@ -397,10 +472,7 @@ func sendFile(w io.Writer, f *os.File, fi fs.FileInfo) error {
 			return err
 		}
 		// записать содержимое буфера в клиентский сокет
-		n, err := w.Write(fileBuf)
-		if n != len(fileBuf) {
-			return fmt.Errorf("ошибка записи: буфер содержит %v байт, а в клиентский сокет записано %v байт", len(fileBuf), n)
-		}
+		_, err = w.Write(fileBuf)
 		if err != nil {
 			return err
 		}
@@ -423,20 +495,22 @@ func writeResponseHeader(w io.Writer, data *ResponseData) error {
 	if data.size != "" {
 		respHeaders = append(respHeaders, "Size: "+data.size)
 	}
-	switch {
-	case strings.Contains(data.name, ".pdf"):
-		respHeaders = append(respHeaders, "Content-Type: application/pdf")
-	case strings.Contains(data.name, ".html"):
-		respHeaders = append(respHeaders, "Content-Type: text/html")
-	case strings.Contains(data.name, ".jpg"):
-		respHeaders = append(respHeaders, "Content-Type: image/jpeg")
-	case strings.Contains(data.name, ".odt"):
-		respHeaders = append(respHeaders, "Content-Type: application/vnd.oasis.opendocument.text; charset=utf-8")
-	case strings.Contains(data.name, ".txt") || strings.Contains(data.name, ".go"):
-		respHeaders = append(respHeaders, "Content-Type: text/plain; charset=utf-8")
-	default:
+
+	// если у файла в названии есть расширение, пишем тип файла в заголовок Content-Type
+	extIndex := strings.LastIndex(data.name, ".")
+	if extIndex == -1 {
 		respHeaders = append(respHeaders, "Content-Type: charset=utf-8")
+		// пишем ответ в клиентский сокет
+		return writeToConn(w, respStatus, respHeaders)
 	}
+	ext := data.name[extIndex:]
+	contentType := mime.TypeByExtension(ext)
+	if contentType == "" {
+		respHeaders = append(respHeaders, "Content-Type: charset=utf-8")
+		// пишем ответ в клиентский сокет
+		return writeToConn(w, respStatus, respHeaders)
+	}
+	respHeaders = append(respHeaders, "Content-Type: "+contentType)
 
 	// пишем ответ в клиентский сокет
 	return writeToConn(w, respStatus, respHeaders)
@@ -445,37 +519,30 @@ func writeResponseHeader(w io.Writer, data *ResponseData) error {
 func writeToConn(w io.Writer, respStatus ResponseStatusLine, respHeaders ResponseHeaders) error {
 	// сформировать статусную строку
 	var statusString strings.Builder
-	
+
 	fmt.Fprintf(&statusString, "%s %s %s\n", respStatus.version, respStatus.status, respStatus.phrase)
-	
+
 	// записать в клиентский сокет статусную строку
-	n, err := w.Write([]byte(statusString.String()))
-	if n != statusString.Len() {
-		return fmt.Errorf("ошибка записи: строка содержит %v байт, а в клиентский сокет записано %v байт", statusString.Len(), n)
-	}
+	_, err := w.Write([]byte(statusString.String()))
 	if err != nil {
 		return err
 	}
+	infoLog.Println("---")
 	infoLog.Printf("%s", statusString.String())
 
 	// сформировать буфер с заголовками ответа
 	var headers strings.Builder
 	for _, v := range respHeaders {
 		header := v + "\n"
-		n, err := headers.WriteString(header)
-		if n != len(header) {
-			return fmt.Errorf("ошибка записи: заголовок содержит %v байт, а в буфер записано %v байт", len(header), n)
-		}
+		_, err := headers.WriteString(header)
 		if err != nil {
 			return err
 		}
 		infoLog.Println(v)
 	}
+	infoLog.Println("---")
 	// записать в клиентский сокет заголовки ответа
-	n, err = w.Write([]byte(headers.String() + "\n"))
-	if n != headers.Len()+len("\n") {
-		return fmt.Errorf("ошибка записи: строка содержит %v байт, а в клиентский сокет записано %v байт", len("\n"), n)
-	}
+	_, err = w.Write([]byte(headers.String() + "\n"))
 	if err != nil {
 		return err
 	}

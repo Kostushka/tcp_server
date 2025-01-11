@@ -3,6 +3,8 @@ package netf
 import (
 	"bytes"
 	"fmt"
+	"github.com/Kostushka/tcp_server/internal/filef"
+	"github.com/Kostushka/tcp_server/internal/stringf"
 	"github.com/Kostushka/tcp_server/internal/types"
 	"html/template"
 	"io"
@@ -16,8 +18,121 @@ import (
 	"time"
 )
 
+// обрабатываем клиентское соединение
+func ProcessingConn(conn *net.TCPConn, rootPath string) {
+	defer func() {
+		// закрыть клиентское соединение
+		err := conn.Close()
+		if err != nil {
+			types.ErrorLog.Println(err)
+		} else {
+			types.InfoLog.Printf("клиентское соединение %s закрыто", conn.RemoteAddr().String())
+		}
+	}()
+
+	types.InfoLog.Printf("начинается работа с клиентским сокетом %s", conn.RemoteAddr().String())
+
+	// получить данные запроса
+	data, err := getRequestData(conn)
+	// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+	// так как не успели вычитать все данные, а клиент уже закрыл сокет
+	if err != nil {
+		types.ErrorLog.Println(err)
+		return
+	}
+
+	// распарсить строку запроса в структуру, заголовки - в map
+	q, reqhead, err := stringf.ParseQueryString(data)
+	// отправить в клиентский сокет ошибку
+	if err != nil {
+		types.ErrorLog.Println(err)
+		// некорректный запрос
+		err = sendResponseHeader(conn, &types.StatusData{
+			Code: types.StatusBadRequest,
+			Size: 0,
+			Name: "",
+		}, err)
+		types.ErrorLog.Println(err)
+		return
+	}
+
+	// логируем клиентские заголовки
+	types.InfoLog.Println("распарсили данные, поступившие от клиента:")
+
+	types.InfoLog.Printf("\"%v %v %v\" %v %v \"%v\"\n",
+		q.Method, q.Path, q.Protocol, conn.RemoteAddr().String(), reqhead["Host"], reqhead["User-Agent"])
+
+	// работаем с путем до файла, взятым из строки запроса
+	path := filepath.Join(rootPath, q.Path)
+
+	// открываем запрашиваемый файл
+	f, respdata, err := filef.OpenFile(conn, path)
+	if err != nil {
+		// создаем ответ сервера для клиента: ошибка при открытии файла
+		err = sendResponseHeader(conn, respdata, err)
+		types.ErrorLog.Println(err)
+		return
+	}
+	// закрыть файл
+	defer func() {
+		err := f.Close()
+		if err != nil {
+			types.ErrorLog.Println(err)
+		}
+	}()
+
+	types.InfoLog.Printf("определен путь до файла %s:", path)
+
+	// получить информацию о файле
+	fi, err := f.Stat()
+	if err != nil {
+		// файл не отправлен - 500
+		err = sendResponseHeader(conn, &types.StatusData{
+			Code: types.StatusInternalServerError,
+			Size: 0,
+			Name: "",
+		}, err)
+		types.ErrorLog.Printf("файл %s не готов к отправке: %w", path, err)
+		return
+	}
+
+	// если файл - каталог, выводим его содержимое
+	if fi.IsDir() {
+		types.InfoLog.Printf("файл %s: is a directory", path)
+		// выводим содержимое каталога
+		if err := showDir(conn, rootPath, q.Path); err != nil {
+			// содержимое каталога не отправлено - 500
+			err = sendResponseHeader(conn, &types.StatusData{
+				Code: types.StatusInternalServerError,
+				Size: 0,
+				Name: "",
+			}, err)
+			types.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", path, err)
+			return
+		}
+		types.InfoLog.Printf("клиенту отправлен html файл с содержимым %s", path)
+		return
+	}
+
+	// отправляем клиенту заголовки
+	err = sendResponseHeader(conn, &types.StatusData{
+		Code: types.StatusOK,
+		Size: fi.Size(),
+		Name: fi.Name(),
+	}, nil)
+	if err != nil {
+		types.ErrorLog.Println(err)
+		return
+	}
+
+	// отправить файл клиенту
+	if err = sendFile(conn, f, fi.Size()); err != nil {
+		types.ErrorLog.Printf("файл не был отправлен клиенту: %w", err)
+	}
+}
+
 // получаем данные запроса
-func GetRequestData(conn *net.TCPConn) ([]byte, error) {
+func getRequestData(conn *net.TCPConn) ([]byte, error) {
 	// буфер для чтения из клиентского сокета
 	buf := make([]byte, 4096)
 
@@ -43,7 +158,7 @@ func GetRequestData(conn *net.TCPConn) ([]byte, error) {
 }
 
 // отправляем клиенту заголовки ответа
-func SendResponseHeader(w io.Writer, statusData *types.StatusData, mainError error) error {
+func sendResponseHeader(w io.Writer, statusData *types.StatusData, mainError error) error {
 	// формируем данные для ответа
 	data := createResponseData(statusData)
 
@@ -66,7 +181,7 @@ func createResponseData(data *types.StatusData) *types.ResponseData {
 }
 
 // отправляем клиенту содержимое каталога
-func ShowDir(w io.Writer, rootPath, queryPath string) error {
+func showDir(w io.Writer, rootPath, queryPath string) error {
 	type args struct {
 		RootPath string
 		DirName  string
@@ -113,7 +228,7 @@ func ShowDir(w io.Writer, rootPath, queryPath string) error {
 	}
 
 	// отправляем заголовки
-	err = SendResponseHeader(w, &types.StatusData{
+	err = sendResponseHeader(w, &types.StatusData{
 		Code: types.StatusOK,
 		Size: int64(buf.Len()),
 		Name: ""}, nil)
@@ -128,15 +243,17 @@ func ShowDir(w io.Writer, rootPath, queryPath string) error {
 }
 
 // отправляем клиенту файл
-func SendFile(w io.Writer, f *os.File, fileSize int64) error {
+func sendFile(w io.Writer, f *os.File, fileSize int64) error {
 	// читаем файл
-	fileBuf := make([]byte, fileSize) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
+	fileBuf := make([]byte, 4096) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
 	// curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:
 	// Warning: Binary output can mess up your terminal. Use "--output -" to tell
 	// Warning: curl to output it to your terminal anyway, or consider "--output
 	// Warning: <FILE>" to save to a file.
+	// также если задать буфер равным размеру файла fileBuf := make([]byte, fileSize) , то можем исчерпать оперативную память, если файл имеет большой размер
+	// например, RAM - 1 Гб, а файл - 5 Гб; буфер лежит в RAM, выделить на него 5 Гб не получится
 	for {
-		_, err := f.Read(fileBuf)
+		n, err := f.Read(fileBuf)
 		// читаем файл, пока не встретим EOF
 		if err == io.EOF {
 			break
@@ -145,7 +262,7 @@ func SendFile(w io.Writer, f *os.File, fileSize int64) error {
 			return err
 		}
 		// записать содержимое буфера в клиентский сокет
-		_, err = w.Write(fileBuf)
+		_, err = w.Write(fileBuf[:n])
 		if err != nil {
 			return err
 		}

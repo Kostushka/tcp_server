@@ -1,12 +1,19 @@
 package main
 
 import (
+	"errors"
 	"flag"
-	"github.com/Kostushka/tcp_server/internal/netf"
-	"github.com/Kostushka/tcp_server/internal/types"
 	"log"
 	"net"
 	"os"
+
+	mlog "github.com/Kostushka/tcp_server/internal/log"
+	"github.com/Kostushka/tcp_server/internal/netf"
+)
+
+var (
+	errNoRootDir   = errors.New("Не указан путь до *корневого* каталога")
+	errInvalidAddr = errors.New("Указан некорректный IP-адрес")
 )
 
 func main() {
@@ -20,26 +27,28 @@ func main() {
 	// должен быть указан порт, на которм сервер будет принимаь запросы на соединение
 	var port int
 	flag.IntVar(&port, "port", 5000, "a port")
+	// должен быть указан путь до файла шаблона
+	var fileTemplate string
+	flag.StringVar(&fileTemplate, "templ", "./html/filesPage.html", "template for displaying file names")
 
 	flag.Parse()
 
 	// должен быть указан путь до домашнего каталога
 	if rootPath == "" {
-		log.Fatal(types.ErrNoRootDir)
+		log.Fatal(errNoRootDir)
 	}
 
 	// IP адрес должен быть корректным
 	var addr net.IP
 	if addr = net.ParseIP(listenAddress); addr == nil {
-		log.Fatal(types.ErrInvalidAddr)
+		log.Fatal(errInvalidAddr)
 	}
 
 	// парсим шаблон для отображения имен файлов
-	t, err := os.ReadFile("./html/filesPage.html")
+	template, err := os.ReadFile(fileTemplate)
 	if err != nil {
 		log.Fatal(err)
 	}
-	types.TemplateDirNames = t
 
 	// объявляем структуру с данными будущего сервера
 	laddr := net.TCPAddr{
@@ -54,17 +63,17 @@ func main() {
 	}
 	defer l.Close()
 
-	types.InfoLog.Printf("Запуск сервера с адресом %v на порту %d", laddr.IP, laddr.Port)
+	mlog.InfoLog.Printf("Запуск сервера с адресом %v на порту %d", laddr.IP, laddr.Port)
 	for {
-		types.InfoLog.Printf("tcp сокет слушает соединения")
+		mlog.InfoLog.Printf("tcp сокет слушает соединения")
 		// слушаем сокетные соединения (запросы)
 		conn, err := l.AcceptTCP()
 		if err != nil {
-			types.ErrorLog.Println(err)
+			mlog.ErrorLog.Println(err)
 		}
-		types.InfoLog.Printf("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
+		mlog.InfoLog.Printf("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
 
 		// обрабатываем каждое клиентское соединение в отдельной горутине
-		go netf.ProcessingConn(conn, rootPath)
+		go netf.ProcessingConn(conn, rootPath, &template)
 	}
 }

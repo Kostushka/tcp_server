@@ -1,17 +1,37 @@
 package stringf
 
 import (
-	"github.com/Kostushka/tcp_server/internal/types"
+	"errors"
 	"net/url"
 	"strings"
 )
 
+type queryString struct {
+	method   string
+	path     string
+	protocol string
+}
+
+func (q *queryString) Method() string {
+	return q.method
+}
+func (q *queryString) Path() string {
+	return q.path
+}
+func (q *queryString) Protocol() string {
+	return q.protocol
+}
+
+type requestHeaders map[string]string
+
+var errInvalidHttpReq = errors.New("incorrect request format: not HTTP")
+
 // парсим строку запроса в структуру, заголовки - в map
-func ParseQueryString(data []byte) (*types.QueryString, types.RequestHeaders, error) {
+func ParseQueryString(data []byte) (*queryString, requestHeaders, error) {
 	// структура с данными строки запроса HTTP-протокола
-	q := types.QueryString{}
+	q := queryString{}
 	// map с заголовками запроса
-	reqhead := make(types.RequestHeaders, 5)
+	reqhead := make(requestHeaders, 5)
 
 	// читаем строку из буфера
 	var queryBuf strings.Builder
@@ -31,16 +51,16 @@ func ParseQueryString(data []byte) (*types.QueryString, types.RequestHeaders, er
 	// парсим строку запроса
 	buf := strings.Split(myTrimSpace(queryBuf.String()), " ")
 	if len(buf) < 3 {
-		return nil, nil, types.ErrInvalidHttpReq
+		return nil, nil, errInvalidHttpReq
 	}
 	// декодируем path на случай, если он не в латинице
 	convertPath, err := url.QueryUnescape(buf[1])
 	if err != nil {
 		return nil, nil, err
 	}
-	q.Method = buf[0]
-	q.Path = convertPath
-	q.Protocol = buf[2]
+	q.method = buf[0]
+	q.path = convertPath
+	q.protocol = buf[2]
 
 	// парсим заголовки
 	headerBuf := data[i:]
@@ -61,14 +81,16 @@ func ParseQueryString(data []byte) (*types.QueryString, types.RequestHeaders, er
 // GET        /                HTTP/1.1
 // удаляем лишние пробелы
 func myTrimSpace(str string) string {
-	var prev string
+	var prev byte
 	var i int
-	var res strings.Builder
+	// если бы использовали конкатинацию строк, то кол-во перевыделений памяти было бы строго равно кол-во итераций (строку модифицировать нельзя)
+	// с каждой итерацией объем копирования данных возрастал бы
+	var res strings.Builder // для эффективного прирощения строки используем strings.Builder - по сути срез и append
 	for ; i < len(str); i++ {
-		if string(str[i]) == prev && prev == " " {
+		if str[i] == prev && prev == ' ' {
 			continue
 		}
-		prev = string(str[i])
+		prev = str[i]
 		res.WriteByte(str[i])
 	}
 	return res.String()

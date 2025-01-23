@@ -1,44 +1,49 @@
 package filef
 
 import (
-	"errors"
-	"github.com/Kostushka/tcp_server/internal/types"
-	"io/fs"
+	"io"
 	"net"
 	"os"
+
+	"github.com/Kostushka/tcp_server/internal/log"
 )
 
 // открываем файл по пути
-func OpenFile(w *net.TCPConn, path string) (*os.File, *types.StatusData, error) {
+func OpenFile(w *net.TCPConn, path string) (*os.File, error) {
 	// открываем запрашиваемый файл
 	f, err := os.Open(path)
 
 	if err != nil {
-		// файл должен быть, иначе 404
-		if errors.Is(err, fs.ErrNotExist) {
-			// создаем ответ сервера для клиента: файл не найден
-			data := &types.StatusData{
-				Code: types.StatusNotFound,
-				Size: 0,
-				Name: ""}
-			return nil, data, err
-		}
-		// файл должен быть доступен, иначе 403
-		if errors.Is(err, fs.ErrPermission) {
-			// создаем ответ сервера для клиента: доступ к файлу запрещен
-			data := &types.StatusData{
-				Code: types.StatusForbidden,
-				Size: 0,
-				Name: ""}
-			return nil, data, err
-		}
-		// файл не был открыт - 500
-		// создаем ответ сервера для клиента: ошибка со стороны сервера
-		data := &types.StatusData{
-			Code: types.StatusInternalServerError,
-			Size: 0,
-			Name: ""}
-		return nil, data, err
+		return nil, err
 	}
-	return f, nil, nil
+	return f, nil
+}
+
+// отправляем клиенту файл
+func SendFile(w io.Writer, f *os.File, fileSize int64) error {
+	// читаем файл
+	fileBuf := make([]byte, 4096) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
+	// curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:
+	// Warning: Binary output can mess up your terminal. Use "--output -" to tell
+	// Warning: curl to output it to your terminal anyway, or consider "--output
+	// Warning: <FILE>" to save to a file.
+	// также если задать буфер равным размеру файла fileBuf := make([]byte, fileSize) , то можем исчерпать оперативную память, если файл имеет большой размер
+	// например, RAM - 1 Гб, а файл - 5 Гб; буфер лежит в RAM, выделить на него 5 Гб не получится
+	for {
+		n, err := f.Read(fileBuf)
+		// читаем файл, пока не встретим EOF
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		// записать содержимое буфера в клиентский сокет
+		_, err = w.Write(fileBuf[:n])
+		if err != nil {
+			return err
+		}
+	}
+	log.InfoLog.Printf("клиенту отправлено тело ответа")
+	return nil
 }

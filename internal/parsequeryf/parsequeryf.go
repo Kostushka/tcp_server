@@ -6,32 +6,32 @@ import (
 	"strings"
 )
 
-type queryString struct {
+type QueryString struct {
 	method   string
 	path     string
 	protocol string
 }
 
-func (q *queryString) Method() string {
+func (q *QueryString) Method() string {
 	return q.method
 }
-func (q *queryString) Path() string {
+func (q *QueryString) Path() string {
 	return q.path
 }
-func (q *queryString) Protocol() string {
+func (q *QueryString) Protocol() string {
 	return q.protocol
 }
 
-type requestHeaders map[string]string
+type RequestHeaders map[string]string
 
 var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")
 
 // парсим строку запроса в структуру, заголовки - в map
-func ParseQueryString(data []byte) (*queryString, requestHeaders, error) {
+func ParseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
 	// структура с данными строки запроса HTTP-протокола
-	q := queryString{}
+	q := QueryString{}
 	// map с заголовками запроса
-	reqhead := make(requestHeaders, 5)
+	reqhead := make(RequestHeaders, 5)
 
 	// читаем строку из буфера
 	var queryBuf strings.Builder

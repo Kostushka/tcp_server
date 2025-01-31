@@ -92,6 +92,44 @@ const (
 	statusInternalServerError = 500
 )
 
+type queryData struct {
+	data []byte
+	parsedQueryString *parsequeryf.QueryString
+	parsedReqHeaders parsequeryf.RequestHeaders
+}
+
+func (q *queryData) Data() []byte {
+	return q.data
+}
+func (q *queryData) ParsedQueryString() *parsequeryf.QueryString {
+	return q.parsedQueryString
+}
+func (q *queryData) ParsedReqHeaders() parsequeryf.RequestHeaders {
+	return q.parsedReqHeaders
+}
+func (q *queryData) SetData(conn *net.TCPConn) (error) {
+	// получить данные запроса
+	data, err := getRequestData(conn)
+	// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+	// так как не успели вычитать все данные, а клиент уже закрыл сокет
+	if err != nil {
+		return err
+	}
+	q.data = data
+	return nil
+}
+func (q *queryData) SetParsedQuery(data []byte) (error) {
+	// распарсить строку запроса в структуру, заголовки - в map
+	queryLine, reqhead, err := parsequeryf.ParseQueryString(data)
+	// отправить в клиентский сокет ошибку
+	if err != nil {
+		return err
+	}
+	q.parsedQueryString = queryLine
+	q.parsedReqHeaders = reqhead
+	return nil
+}
+
 // обрабатываем клиентское соединение
 func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Template) {
 	defer func() {
@@ -106,18 +144,17 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 
 	log.InfoLog.Printf("начинается работа с клиентским сокетом %s", conn.RemoteAddr().String())
 
-	// получить данные запроса
-	data, err := getRequestData(conn)
-	// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
-	// так как не успели вычитать все данные, а клиент уже закрыл сокет
+	// данные запроса
+	query := queryData{}
+	// записать данные запроса
+	err := query.SetData(conn)
 	if err != nil {
 		log.ErrorLog.Println(err)
 		return
 	}
 
-	// распарсить строку запроса в структуру, заголовки - в map
-	q, reqhead, err := parsequeryf.ParseQueryString(data)
-	// отправить в клиентский сокет ошибку
+	// записать распарсенные строку запроса и заголовки
+	err = query.SetParsedQuery(query.Data())
 	if err != nil {
 		log.ErrorLog.Println(err)
 		// некорректный запрос
@@ -125,17 +162,38 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 			code: statusBadRequest,
 		}, err)
 		log.ErrorLog.Println(err)
-		return
 	}
+	// // получить данные запроса
+	// data, err := getRequestData(conn)
+	// // по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+	// // так как не успели вычитать все данные, а клиент уже закрыл сокет
+	// if err != nil {
+		// log.ErrorLog.Println(err)
+		// return
+	// }
+
+	// // распарсить строку запроса в структуру, заголовки - в map
+	// q, reqhead, err := parsequeryf.ParseQueryString(data)
+	// // отправить в клиентский сокет ошибку
+	// if err != nil {
+		// log.ErrorLog.Println(err)
+		// // некорректный запрос
+		// err = sendResponseHeader(conn, &statusData{
+			// code: statusBadRequest,
+		// }, err)
+		// log.ErrorLog.Println(err)
+		// return
+	// }
 
 	// логируем клиентские заголовки
 	log.InfoLog.Println("распарсили данные, поступившие от клиента:")
 
 	log.InfoLog.Printf("\"%v %v %v\" %v %v \"%v\"\n",
-		q.Method(), q.Path(), q.Protocol(), conn.RemoteAddr().String(), reqhead["Host"], reqhead["User-Agent"])
+		query.ParsedQueryString().Method(), query.ParsedQueryString().Path(), query.ParsedQueryString().Protocol(), conn.RemoteAddr().String(), 
+		query.ParsedReqHeaders()["Host"], query.ParsedReqHeaders()["User-Agent"])
 
 	// работаем с путем до файла, взятым из строки запроса
-	path := filepath.Join(rootPath, q.Path())
+	path := filepath.Join(rootPath, query.ParsedQueryString().Path())
 
 	// открываем запрашиваемый файл
 	f, err := openFile(conn, path)
@@ -165,7 +223,7 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 
 	// если файл - каталог, выводим его содержимое
 	if fi.IsDir() {
-		workingWithCatalog(conn, rootPath, q.Path(), template)
+		workingWithCatalog(conn, rootPath, query.ParsedQueryString().Path(), template)
 		return
 	}
 

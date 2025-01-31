@@ -4,20 +4,22 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"mime"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Kostushka/tcp_server/internal/dirf"
 	"github.com/Kostushka/tcp_server/internal/filef"
 	"github.com/Kostushka/tcp_server/internal/log"
-	"github.com/Kostushka/tcp_server/internal/printf"
-	"github.com/Kostushka/tcp_server/internal/stringf"
+	"github.com/Kostushka/tcp_server/internal/parsequeryf"
 )
 
 type responseStatusLine struct {
@@ -39,9 +41,10 @@ func (r *responseStatusLine) Phrase() string {
 type responseHeaders []string
 
 type statusData struct {
-	code int
-	size int64
-	name string
+	code        int
+	size        int64
+	name        string
+	contentType string
 }
 
 func (s *statusData) Code() int {
@@ -53,12 +56,16 @@ func (s *statusData) Size() int64 {
 func (s *statusData) Name() string {
 	return s.name
 }
+func (s *statusData) ContentType() string {
+	return s.contentType
+}
 
 type responseData struct {
-	status string
-	phrase string
-	size   string
-	name   string
+	status      string
+	phrase      string
+	size        string
+	name        string
+	contentType string
 }
 
 func (r *responseData) Status() string {
@@ -73,6 +80,9 @@ func (r *responseData) Size() string {
 func (r *responseData) Name() string {
 	return r.name
 }
+func (r *responseData) ContentType() string {
+	return r.contentType
+}
 
 const (
 	statusOK                  = 200
@@ -83,7 +93,7 @@ const (
 )
 
 // обрабатываем клиентское соединение
-func ProcessingConn(conn *net.TCPConn, rootPath string, template *[]byte) {
+func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Template) {
 	defer func() {
 		// закрыть клиентское соединение
 		err := conn.Close()
@@ -106,15 +116,13 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *[]byte) {
 	}
 
 	// распарсить строку запроса в структуру, заголовки - в map
-	q, reqhead, err := stringf.ParseQueryString(data)
+	q, reqhead, err := parsequeryf.ParseQueryString(data)
 	// отправить в клиентский сокет ошибку
 	if err != nil {
 		log.ErrorLog.Println(err)
 		// некорректный запрос
 		err = sendResponseHeader(conn, &statusData{
 			code: statusBadRequest,
-			size: 0,
-			name: "",
 		}, err)
 		log.ErrorLog.Println(err)
 		return
@@ -129,38 +137,13 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *[]byte) {
 	// работаем с путем до файла, взятым из строки запроса
 	path := filepath.Join(rootPath, q.Path())
 
-	var respdata *statusData
 	// открываем запрашиваемый файл
-	f, err := filef.OpenFile(conn, path)
+	f, err := openFile(conn, path)
 	if err != nil {
-		switch {
-		// файл должен быть, иначе 404
-		case errors.Is(err, fs.ErrNotExist):
-			// создаем ответ сервера для клиента: файл не найден
-			respdata = &statusData{
-				code: statusNotFound,
-				size: 0,
-				name: ""}
-		// файл должен быть доступен, иначе 403
-		case errors.Is(err, fs.ErrPermission):
-			// создаем ответ сервера для клиента: доступ к файлу запрещен
-			respdata = &statusData{
-				code: statusForbidden,
-				size: 0,
-				name: ""}
-		// файл не был открыт - 500
-		default:
-			// создаем ответ сервера для клиента: ошибка со стороны сервера
-			respdata = &statusData{
-				code: statusInternalServerError,
-				size: 0,
-				name: ""}
-		}
-		// отправляем клиенту: ошибка при открытии файла
-		err = sendResponseHeader(conn, respdata, err)
 		log.ErrorLog.Println(err)
 		return
 	}
+
 	// закрыть файл
 	defer func() {
 		err := f.Close()
@@ -175,53 +158,14 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *[]byte) {
 	fi, err := f.Stat()
 	if err != nil {
 		// файл не отправлен - 500
-		err = sendResponseHeader(conn, &statusData{
-			code: statusInternalServerError,
-			size: 0,
-			name: "",
-		}, err)
+		err = sendInternalServerError(conn, err)
 		log.ErrorLog.Printf("файл %s не готов к отправке: %w", path, err)
 		return
 	}
 
 	// если файл - каталог, выводим его содержимое
 	if fi.IsDir() {
-		log.InfoLog.Printf("файл %s: is a directory", path)
-		// выводим содержимое каталога
-		buf, err := printf.ShowDir(conn, rootPath, q.Path(), template)
-		if err != nil {
-			// содержимое каталога не готово к отправке - 500
-			err = sendResponseHeader(conn, &statusData{
-				code: statusInternalServerError,
-				size: 0,
-				name: "",
-			}, err)
-			log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", path, err)
-			return
-		}
-		// отправляем заголовки
-		err = sendResponseHeader(conn, &statusData{
-			code: statusOK,
-			size: int64(buf.Len()),
-			name: ""}, nil)
-
-		if err != nil {
-			// заголовки не отправлены - 500
-			err = sendResponseHeader(conn, &statusData{
-				code: statusInternalServerError,
-				size: 0,
-				name: "",
-			}, err)
-			log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", path, err)
-			return
-		}
-		// записать содержимое буфера в клиентский сокет
-		_, err = conn.Write(buf.Bytes())
-		if err != nil {
-			log.ErrorLog.Println(err)
-			return
-		}
-		log.InfoLog.Printf("клиенту отправлен html файл с содержимым %s", path)
+		workingWithCatalog(conn, rootPath, q.Path(), template)
 		return
 	}
 
@@ -240,6 +184,79 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *[]byte) {
 	if err = filef.SendFile(conn, f, fi.Size()); err != nil {
 		log.ErrorLog.Printf("файл не был отправлен клиенту: %w", err)
 	}
+}
+
+func sendInternalServerError(w io.Writer, mainError error) error {
+	// отправляем заголоки с ошибкой 500
+	err := sendResponseHeader(w, &statusData{
+		code: statusInternalServerError,
+	}, mainError)
+	return err
+}
+
+func workingWithCatalog(w *net.TCPConn, rootPath, queryPath string, template *template.Template) {
+	log.InfoLog.Printf("файл %s: is a directory", filepath.Join(rootPath, queryPath))
+
+	// выводим содержимое каталога
+	buf, err := dirf.ShowDir(w, rootPath, queryPath, template)
+	if err != nil {
+		// содержимое каталога не готово к отправке - 500
+		err = sendInternalServerError(w, err)
+		log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(rootPath, queryPath), err)
+		return
+	}
+	// отправляем заголовки
+	err = sendResponseHeader(w, &statusData{
+		code:        statusOK,
+		size:        int64(buf.Len()),
+		contentType: "text/html"}, nil)
+
+	if err != nil {
+		// заголовки не отправлены - 500
+		err = sendInternalServerError(w, err)
+		log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(rootPath, queryPath), err)
+		return
+	}
+	// записать содержимое буфера в клиентский сокет
+	_, err = w.Write(buf.Bytes())
+	if err != nil {
+		log.ErrorLog.Println(err)
+		return
+	}
+	log.InfoLog.Printf("клиенту отправлен html файл с содержимым %s", filepath.Join(rootPath, queryPath))
+	return
+}
+
+func openFile(w *net.TCPConn, path string) (*os.File, error) {
+	var respdata *statusData
+
+	f, err := filef.OpenFile(w, path)
+	if err != nil {
+		switch {
+		// файл должен быть, иначе 404
+		case errors.Is(err, fs.ErrNotExist):
+			// создаем ответ сервера для клиента: файл не найден
+			respdata = &statusData{
+				code: statusNotFound,
+			}
+		// файл должен быть доступен, иначе 403
+		case errors.Is(err, fs.ErrPermission):
+			// создаем ответ сервера для клиента: доступ к файлу запрещен
+			respdata = &statusData{
+				code: statusForbidden,
+			}
+		// файл не был открыт - 500
+		default:
+			// создаем ответ сервера для клиента: ошибка со стороны сервера
+			respdata = &statusData{
+				code: statusInternalServerError,
+			}
+		}
+		// отправляем клиенту: ошибка при открытии файла
+		err = sendResponseHeader(w, respdata, err)
+		return nil, err
+	}
+	return f, nil
 }
 
 // получаем данные запроса
@@ -284,21 +301,22 @@ func sendResponseHeader(w io.Writer, statusData *statusData, mainError error) er
 func createResponseData(data *statusData) *responseData {
 	// заполняем структуру данных для формирования ответа клиенту
 	return &responseData{
-		status: strconv.Itoa(data.Code()),
-		phrase: http.StatusText(data.Code()),
-		size:   strconv.FormatInt(data.Size(), 10),
-		name:   data.Name(),
+		status:      strconv.Itoa(data.Code()),
+		phrase:      http.StatusText(data.Code()),
+		size:        strconv.FormatInt(data.Size(), 10),
+		name:        data.Name(),
+		contentType: data.ContentType(),
 	}
 }
 
 // формируем и отправляем клиенту заголовки ответа
 func writeResponseHeader(w io.Writer, data *responseData) error {
-	respStatus := responseStatusLine{}
+	respStatus := responseStatusLine{
+		version: "HTTP/1.1",
+		status:  data.Status(),
+		phrase:  data.Phrase(),
+	}
 	respHeaders := responseHeaders{}
-
-	respStatus.version = "HTTP/1.1"
-	respStatus.status = data.Status()
-	respStatus.phrase = data.Phrase()
 
 	respHeaders = append(respHeaders, "Server: someserver/1.18.0")
 	respHeaders = append(respHeaders, "Connection: close")
@@ -306,18 +324,26 @@ func writeResponseHeader(w io.Writer, data *responseData) error {
 	if data.Size() != "" {
 		respHeaders = append(respHeaders, "Size: "+data.Size())
 	}
+	// не пишем Content-Type, если ошибка
+	if data.Status() != strconv.Itoa(statusOK) {
+		return writeToConn(w, respStatus, respHeaders)
+	}
+	if data.ContentType() != "" {
+		respHeaders = append(respHeaders, "Content-Type: "+data.ContentType())
+		return writeToConn(w, respStatus, respHeaders)
+	}
 
 	// если у файла в названии есть расширение, пишем тип файла в заголовок Content-Type
 	extIndex := strings.LastIndex(data.Name(), ".")
 	if extIndex == -1 {
-		respHeaders = append(respHeaders, "Content-Type: charset=utf-8")
+		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
 		// пишем ответ в клиентский сокет
 		return writeToConn(w, respStatus, respHeaders)
 	}
 	ext := data.Name()[extIndex:]
 	contentType := mime.TypeByExtension(ext)
 	if contentType == "" {
-		respHeaders = append(respHeaders, "Content-Type: charset=utf-8")
+		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
 		// пишем ответ в клиентский сокет
 		return writeToConn(w, respStatus, respHeaders)
 	}

@@ -1,4 +1,4 @@
-package printf
+package dirf
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 )
 
 // отправляем клиенту содержимое каталога
-func ShowDir(w io.Writer, rootPath, queryPath string, templ *[]byte) (*bytes.Buffer, error) {
+func ShowDir(w io.Writer, rootPath, queryPath string, t *template.Template) (*bytes.Buffer, error) {
 	type args struct {
 		RootPath string
 		DirName  string
@@ -34,11 +34,6 @@ func ShowDir(w io.Writer, rootPath, queryPath string, templ *[]byte) (*bytes.Buf
 		names = append(names, v.Name())
 	}
 
-	// используем шаблон для отображения имен файлов
-	t, err := template.New("index").Parse(string(*templ))
-	if err != nil {
-		return nil, err
-	}
 	// если запрос идет на корень, то оставляем переменную с путем запроса пустой,
 	// так как по умолчанию в html шаблоне путь запроса до директории и имена содержащихся в ней файлов/каталогов разделяет слеш
 	if queryPath == "/" {

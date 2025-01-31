@@ -1,4 +1,4 @@
-package stringf
+package parsequeryf
 
 import (
 	"errors"
@@ -24,7 +24,7 @@ func (q *queryString) Protocol() string {
 
 type requestHeaders map[string]string
 
-var errInvalidHttpReq = errors.New("incorrect request format: not HTTP")
+var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")
 
 // парсим строку запроса в структуру, заголовки - в map
 func ParseQueryString(data []byte) (*queryString, requestHeaders, error) {
@@ -49,9 +49,10 @@ func ParseQueryString(data []byte) (*queryString, requestHeaders, error) {
 	i++
 
 	// парсим строку запроса
-	buf := strings.Split(myTrimSpace(queryBuf.String()), " ")
+	buf := strings.Split(trimQueryStringSpace(queryBuf.String()), " ")
+	// в буфере должно быть 3 элемента: метод, путь, версия протокола
 	if len(buf) < 3 {
-		return nil, nil, errInvalidHttpReq
+		return nil, nil, ErrInvalidHttpReq
 	}
 	// декодируем path на случай, если он не в латинице
 	convertPath, err := url.QueryUnescape(buf[1])
@@ -80,7 +81,7 @@ func ParseQueryString(data []byte) (*queryString, requestHeaders, error) {
 // учитываем, что строка запроса может содержать более одного пробела, например:
 // GET        /                HTTP/1.1
 // удаляем лишние пробелы
-func myTrimSpace(str string) string {
+func trimQueryStringSpace(str string) string {
 	var prev byte
 	var i int
 	// если бы использовали конкатинацию строк, то кол-во перевыделений памяти было бы строго равно кол-во итераций (строку модифицировать нельзя)

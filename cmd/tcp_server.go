@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"html/template"
 	"log"
 	"net"
 	"os"
@@ -12,22 +13,24 @@ import (
 )
 
 var (
-	errNoRootDir   = errors.New("Не указан путь до *корневого* каталога")
-	errInvalidAddr = errors.New("Указан некорректный IP-адрес")
+	ErrNoRootDir   = errors.New("Не указан путь до *корневого* каталога")
+	ErrInvalidAddr = errors.New("Указан некорректный IP-адрес")
 )
 
 func main() {
-
 	// должен быть указан путь до домашнего каталога
 	var rootPath string
 	flag.StringVar(&rootPath, "path", "", "a path to home directory")
+
 	// должен быть указан адрес, на котором будет запущен сервер
 	var listenAddress string
 	flag.StringVar(&listenAddress, "IP", "127.0.0.1", "a listening address")
+
 	// должен быть указан порт, на которм сервер будет принимаь запросы на соединение
 	var port int
 	flag.IntVar(&port, "port", 5000, "a port")
-	// должен быть указан путь до файла шаблона
+
+	// должен быть указан путь до файла шаблона с отображением имен файлов
 	var fileTemplate string
 	flag.StringVar(&fileTemplate, "templ", "./html/filesPage.html", "template for displaying file names")
 
@@ -35,17 +38,22 @@ func main() {
 
 	// должен быть указан путь до домашнего каталога
 	if rootPath == "" {
-		log.Fatal(errNoRootDir)
+		log.Fatal(ErrNoRootDir)
 	}
 
 	// IP адрес должен быть корректным
 	var addr net.IP
 	if addr = net.ParseIP(listenAddress); addr == nil {
-		log.Fatal(errInvalidAddr)
+		log.Fatal(ErrInvalidAddr)
 	}
 
 	// парсим шаблон для отображения имен файлов
-	template, err := os.ReadFile(fileTemplate)
+	templ, err := os.ReadFile(fileTemplate)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// используем шаблон для отображения имен файлов
+	t, err := template.New("index").Parse(string(templ))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,6 +82,6 @@ func main() {
 		mlog.InfoLog.Printf("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
 
 		// обрабатываем каждое клиентское соединение в отдельной горутине
-		go netf.ProcessingConn(conn, rootPath, &template)
+		go netf.ProcessingConn(conn, rootPath, t)
 	}
 }

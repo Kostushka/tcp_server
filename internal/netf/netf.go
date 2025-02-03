@@ -22,6 +22,15 @@ import (
 	"github.com/Kostushka/tcp_server/internal/parsequeryf"
 )
 
+const (
+	statusOK                  = 200
+	statusBadRequest          = 400
+	statusForbidden           = 403
+	statusNotFound            = 404
+	statusInternalServerError = 500
+)
+
+// строка статуса ответа
 type responseStatusLine struct {
 	version string
 	status  string
@@ -38,8 +47,10 @@ func (r *responseStatusLine) Phrase() string {
 	return r.phrase
 }
 
+// заголовки ответа
 type responseHeaders []string
 
+// собираемые данные для строки статуса и заголовков ответа
 type statusData struct {
 	code        int
 	size        int64
@@ -60,6 +71,7 @@ func (s *statusData) ContentType() string {
 	return s.contentType
 }
 
+// сформированные данные для строки статуса и заголовков ответа
 type responseData struct {
 	status      string
 	phrase      string
@@ -84,14 +96,71 @@ func (r *responseData) ContentType() string {
 	return r.contentType
 }
 
-const (
-	statusOK                  = 200
-	statusBadRequest          = 400
-	statusForbidden           = 403
-	statusNotFound            = 404
-	statusInternalServerError = 500
-)
+// структура с сформированными данными для строки статуса и заголовков ответа
+type HeaderData struct {
+	responseData *responseData
+}
 
+func (h *HeaderData) ResponseData() *responseData {
+	return h.responseData
+}
+
+// формируем данные заголовков для ответа клиенту
+func (h *HeaderData) SetResponseData(data *statusData) {
+	// заполняем структуру данных для формирования ответа клиенту
+	h.responseData = &responseData{
+		status:      strconv.Itoa(data.Code()),
+		phrase:      http.StatusText(data.Code()),
+		size:        strconv.FormatInt(data.Size(), 10),
+		name:        data.Name(),
+		contentType: data.ContentType(),
+	}
+}
+// формируем и отправляем клиенту заголовки ответа
+func (h *HeaderData) WriteResponseHeader(w io.Writer) error {
+	respStatus := responseStatusLine{
+		version: "HTTP/1.1",
+		status:  h.responseData.Status(),
+		phrase:  h.responseData.Phrase(),
+	}
+	respHeaders := responseHeaders{}
+
+	respHeaders = append(respHeaders, "Server: someserver/1.18.0")
+	respHeaders = append(respHeaders, "Connection: close")
+	respHeaders = append(respHeaders, "Date: "+time.Now().Format(time.UnixDate))
+	if h.responseData.Size() != "" {
+		respHeaders = append(respHeaders, "Size: "+h.responseData.Size())
+	}
+	// не пишем Content-Type, если ошибка
+	if h.responseData.Status() != strconv.Itoa(statusOK) {
+		return writeToConn(w, respStatus, respHeaders)
+	}
+	if h.responseData.ContentType() != "" {
+		respHeaders = append(respHeaders, "Content-Type: "+h.responseData.ContentType())
+		return writeToConn(w, respStatus, respHeaders)
+	}
+
+	// если у файла в названии есть расширение, пишем тип файла в заголовок Content-Type
+	extIndex := strings.LastIndex(h.responseData.Name(), ".")
+	if extIndex == -1 {
+		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
+		// пишем ответ в клиентский сокет
+		return writeToConn(w, respStatus, respHeaders)
+	}
+	ext := h.responseData.Name()[extIndex:]
+	contentType := mime.TypeByExtension(ext)
+	if contentType == "" {
+		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
+		// пишем ответ в клиентский сокет
+		return writeToConn(w, respStatus, respHeaders)
+	}
+	respHeaders = append(respHeaders, "Content-Type: "+contentType)
+
+	// пишем ответ в клиентский сокет
+	return writeToConn(w, respStatus, respHeaders)
+}
+
+// данные запроса
 type queryData struct {
 	data []byte
 	parsedQueryString *parsequeryf.QueryString
@@ -109,15 +178,34 @@ func (q *queryData) ParsedReqHeaders() parsequeryf.RequestHeaders {
 }
 func (q *queryData) SetData(conn *net.TCPConn) (error) {
 	// получить данные запроса
-	data, err := getRequestData(conn)
-	// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
-	// так как не успели вычитать все данные, а клиент уже закрыл сокет
-	if err != nil {
-		return err
+	// буфер для чтения из клиентского сокета
+	buf := make([]byte, 4096)
+
+	var data []byte
+	// пока клиентский сокет пишет, читаем в буфер
+	for {
+		n, err := conn.Read(buf)
+		// обрабатываем ошибку при чтении
+		if err != nil {
+			// не успели вычитать все данные, клиент закрыл сокет
+			if err == io.EOF {
+				err = fmt.Errorf("Клиент преждевременно закрыл соединение: %w", err)
+			}
+			return err
+		}
+		// добавляем к итоговому срезу считанные в буфер данные
+		data = append(data, buf[:n]...)
+
+		// по возвращении клиентским сокетом пустой строки, перестаем читать
+		if bytes.Contains(data, []byte("\r\n\r\n")) || bytes.Contains(data, []byte("\n\n")) {
+			break
+		}
 	}
+	// записать данные запроса в буфер структуры
 	q.data = data
 	return nil
 }
+
 func (q *queryData) SetParsedQuery(data []byte) (error) {
 	// распарсить строку запроса в структуру, заголовки - в map
 	queryLine, reqhead, err := parsequeryf.ParseQueryString(data)
@@ -125,8 +213,69 @@ func (q *queryData) SetParsedQuery(data []byte) (error) {
 	if err != nil {
 		return err
 	}
+	// записать распарсенные данные запросы в соответсвующие поля структуры
 	q.parsedQueryString = queryLine
 	q.parsedReqHeaders = reqhead
+	return nil
+}
+
+// файл и информация о нем
+type fileData struct {
+	file *os.File
+	fileInfo fs.FileInfo
+}
+
+func (f *fileData) File() *os.File {
+	return f.file
+}
+
+func (f *fileData) FileInfo() fs.FileInfo {
+	return f.fileInfo
+}
+
+func (f *fileData) SetFile(w io.Writer, path string) error {
+	var respdata *statusData
+
+	file, err := filef.OpenFile(w, path)
+	if err != nil {
+		switch {
+		// файл должен быть, иначе 404
+		case errors.Is(err, fs.ErrNotExist):
+			// создаем ответ сервера для клиента: файл не найден
+			respdata = &statusData{
+				code: statusNotFound,
+			}
+		// файл должен быть доступен, иначе 403
+		case errors.Is(err, fs.ErrPermission):
+			// создаем ответ сервера для клиента: доступ к файлу запрещен
+			respdata = &statusData{
+				code: statusForbidden,
+			}
+		// файл не был открыт - 500
+		default:
+			// создаем ответ сервера для клиента: ошибка со стороны сервера
+			respdata = &statusData{
+				code: statusInternalServerError,
+			}
+		}
+		// отправляем клиенту: ошибка при открытии файла
+		err = sendResponseHeader(w, respdata, err)
+		return err
+	}
+	
+	f.file = file
+	return nil	
+}
+
+func (f *fileData) SetFileInfo(w io.Writer) error {
+	// получить информацию о файле
+	fi, err := f.File().Stat()
+	if err != nil {
+		// файл не отправлен - 500
+		err = sendInternalServerError(w, err)
+		return err
+	}
+	f.fileInfo = fi
 	return nil
 }
 
@@ -146,9 +295,12 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 
 	// данные запроса
 	query := queryData{}
+	
 	// записать данные запроса
 	err := query.SetData(conn)
 	if err != nil {
+		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+		// так как не успели вычитать все данные, а клиент уже закрыл сокет
 		log.ErrorLog.Println(err)
 		return
 	}
@@ -163,27 +315,6 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 		}, err)
 		log.ErrorLog.Println(err)
 	}
-	// // получить данные запроса
-	// data, err := getRequestData(conn)
-	// // по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
-	// // так как не успели вычитать все данные, а клиент уже закрыл сокет
-	// if err != nil {
-		// log.ErrorLog.Println(err)
-		// return
-	// }
-
-	// // распарсить строку запроса в структуру, заголовки - в map
-	// q, reqhead, err := parsequeryf.ParseQueryString(data)
-	// // отправить в клиентский сокет ошибку
-	// if err != nil {
-		// log.ErrorLog.Println(err)
-		// // некорректный запрос
-		// err = sendResponseHeader(conn, &statusData{
-			// code: statusBadRequest,
-		// }, err)
-		// log.ErrorLog.Println(err)
-		// return
-	// }
 
 	// логируем клиентские заголовки
 	log.InfoLog.Println("распарсили данные, поступившие от клиента:")
@@ -195,8 +326,11 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 	// работаем с путем до файла, взятым из строки запроса
 	path := filepath.Join(rootPath, query.ParsedQueryString().Path())
 
-	// открываем запрашиваемый файл
-	f, err := openFile(conn, path)
+	// файл и его данные
+	f := fileData{}
+
+	// записываем запрашиваемый файл
+	err = f.SetFile(conn, path)
 	if err != nil {
 		log.ErrorLog.Println(err)
 		return
@@ -204,7 +338,7 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 
 	// закрыть файл
 	defer func() {
-		err := f.Close()
+		err := f.File().Close()
 		if err != nil {
 			log.ErrorLog.Println(err)
 		}
@@ -212,17 +346,15 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 
 	log.InfoLog.Printf("определен путь до файла %s:", path)
 
-	// получить информацию о файле
-	fi, err := f.Stat()
+	// записать информацию о файле
+	err = f.SetFileInfo(conn)
 	if err != nil {
-		// файл не отправлен - 500
-		err = sendInternalServerError(conn, err)
 		log.ErrorLog.Printf("файл %s не готов к отправке: %w", path, err)
 		return
 	}
 
 	// если файл - каталог, выводим его содержимое
-	if fi.IsDir() {
+	if f.FileInfo().IsDir() {
 		workingWithCatalog(conn, rootPath, query.ParsedQueryString().Path(), template)
 		return
 	}
@@ -230,8 +362,8 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 	// отправляем клиенту заголовки
 	err = sendResponseHeader(conn, &statusData{
 		code: statusOK,
-		size: fi.Size(),
-		name: fi.Name(),
+		size: f.FileInfo().Size(),
+		name: f.FileInfo().Name(),
 	}, nil)
 	if err != nil {
 		log.ErrorLog.Println(err)
@@ -239,13 +371,13 @@ func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Templ
 	}
 
 	// отправить файл клиенту
-	if err = filef.SendFile(conn, f, fi.Size()); err != nil {
+	if err = filef.SendFile(conn, f.File(), f.FileInfo().Size()); err != nil {
 		log.ErrorLog.Printf("файл не был отправлен клиенту: %w", err)
 	}
 }
 
+// отправляем заголоки с ошибкой 500
 func sendInternalServerError(w io.Writer, mainError error) error {
-	// отправляем заголоки с ошибкой 500
 	err := sendResponseHeader(w, &statusData{
 		code: statusInternalServerError,
 	}, mainError)
@@ -285,130 +417,17 @@ func workingWithCatalog(w *net.TCPConn, rootPath, queryPath string, template *te
 	return
 }
 
-func openFile(w *net.TCPConn, path string) (*os.File, error) {
-	var respdata *statusData
-
-	f, err := filef.OpenFile(w, path)
-	if err != nil {
-		switch {
-		// файл должен быть, иначе 404
-		case errors.Is(err, fs.ErrNotExist):
-			// создаем ответ сервера для клиента: файл не найден
-			respdata = &statusData{
-				code: statusNotFound,
-			}
-		// файл должен быть доступен, иначе 403
-		case errors.Is(err, fs.ErrPermission):
-			// создаем ответ сервера для клиента: доступ к файлу запрещен
-			respdata = &statusData{
-				code: statusForbidden,
-			}
-		// файл не был открыт - 500
-		default:
-			// создаем ответ сервера для клиента: ошибка со стороны сервера
-			respdata = &statusData{
-				code: statusInternalServerError,
-			}
-		}
-		// отправляем клиенту: ошибка при открытии файла
-		err = sendResponseHeader(w, respdata, err)
-		return nil, err
-	}
-	return f, nil
-}
-
-// получаем данные запроса
-func getRequestData(conn *net.TCPConn) ([]byte, error) {
-	// буфер для чтения из клиентского сокета
-	buf := make([]byte, 4096)
-
-	var data []byte
-	// пока клиентский сокет пишет, читаем в буфер
-	for {
-		n, err := conn.Read(buf)
-		// обрабатываем ошибку при чтении
-		if err != nil {
-			if err == io.EOF {
-				err = fmt.Errorf("Клиент преждевременно закрыл соединение: %w", err)
-			}
-			return nil, err
-		}
-		// добавляем к итоговому срезу считанные в буфер данные
-		data = append(data, buf[:n]...)
-
-		// по возвращении клиентским сокетом пустой строки, перестаем читать
-		if bytes.Contains(data, []byte("\r\n\r\n")) || bytes.Contains(data, []byte("\n\n")) {
-			return data, nil
-		}
-	}
-}
-
 // отправляем клиенту заголовки ответа
 func sendResponseHeader(w io.Writer, statusData *statusData, mainError error) error {
 	// формируем данные для ответа
-	data := createResponseData(statusData)
+	data := HeaderData{}
+	data.SetResponseData(statusData)
 
 	// отправляем заголовки клиенту
-	if err := writeResponseHeader(w, data); err != nil {
+	if err := data.WriteResponseHeader(w); err != nil {
 		return fmt.Errorf("%w: %w", err, mainError)
 	}
 	return mainError
-}
-
-// формируем данные для ответа клиенту
-func createResponseData(data *statusData) *responseData {
-	// заполняем структуру данных для формирования ответа клиенту
-	return &responseData{
-		status:      strconv.Itoa(data.Code()),
-		phrase:      http.StatusText(data.Code()),
-		size:        strconv.FormatInt(data.Size(), 10),
-		name:        data.Name(),
-		contentType: data.ContentType(),
-	}
-}
-
-// формируем и отправляем клиенту заголовки ответа
-func writeResponseHeader(w io.Writer, data *responseData) error {
-	respStatus := responseStatusLine{
-		version: "HTTP/1.1",
-		status:  data.Status(),
-		phrase:  data.Phrase(),
-	}
-	respHeaders := responseHeaders{}
-
-	respHeaders = append(respHeaders, "Server: someserver/1.18.0")
-	respHeaders = append(respHeaders, "Connection: close")
-	respHeaders = append(respHeaders, "Date: "+time.Now().Format(time.UnixDate))
-	if data.Size() != "" {
-		respHeaders = append(respHeaders, "Size: "+data.Size())
-	}
-	// не пишем Content-Type, если ошибка
-	if data.Status() != strconv.Itoa(statusOK) {
-		return writeToConn(w, respStatus, respHeaders)
-	}
-	if data.ContentType() != "" {
-		respHeaders = append(respHeaders, "Content-Type: "+data.ContentType())
-		return writeToConn(w, respStatus, respHeaders)
-	}
-
-	// если у файла в названии есть расширение, пишем тип файла в заголовок Content-Type
-	extIndex := strings.LastIndex(data.Name(), ".")
-	if extIndex == -1 {
-		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
-		// пишем ответ в клиентский сокет
-		return writeToConn(w, respStatus, respHeaders)
-	}
-	ext := data.Name()[extIndex:]
-	contentType := mime.TypeByExtension(ext)
-	if contentType == "" {
-		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
-		// пишем ответ в клиентский сокет
-		return writeToConn(w, respStatus, respHeaders)
-	}
-	respHeaders = append(respHeaders, "Content-Type: "+contentType)
-
-	// пишем ответ в клиентский сокет
-	return writeToConn(w, respStatus, respHeaders)
 }
 
 // пишем заголовки в клиентский сокет

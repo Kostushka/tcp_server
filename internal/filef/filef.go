@@ -2,14 +2,13 @@ package filef
 
 import (
 	"io"
-	"net"
 	"os"
 
 	"github.com/Kostushka/tcp_server/internal/log"
 )
 
 // открываем файл по пути
-func OpenFile(w *net.TCPConn, path string) (*os.File, error) {
+func OpenFile(w io.Writer, path string) (*os.File, error) {
 	// открываем запрашиваемый файл
 	f, err := os.Open(path)
 

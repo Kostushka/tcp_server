@@ -116,6 +116,7 @@ func (h *HeaderData) SetResponseData(data *statusData) {
 		contentType: data.ContentType(),
 	}
 }
+
 // формируем и отправляем клиенту заголовки ответа
 func (h *HeaderData) WriteResponseHeader(w io.Writer) error {
 	respStatus := responseStatusLine{
@@ -162,21 +163,13 @@ func (h *HeaderData) WriteResponseHeader(w io.Writer) error {
 
 // данные запроса
 type queryData struct {
-	data []byte
+	data              []byte
 	parsedQueryString *parsequeryf.QueryString
-	parsedReqHeaders parsequeryf.RequestHeaders
+	parsedReqHeaders  parsequeryf.RequestHeaders
 }
 
-func (q *queryData) Data() []byte {
-	return q.data
-}
-func (q *queryData) ParsedQueryString() *parsequeryf.QueryString {
-	return q.parsedQueryString
-}
-func (q *queryData) ParsedReqHeaders() parsequeryf.RequestHeaders {
-	return q.parsedReqHeaders
-}
-func (q *queryData) SetData(conn *net.TCPConn) (error) {
+// создать структуру с данными запроса
+func newQueryData(conn *net.TCPConn) (*queryData, error) {
 	// получить данные запроса
 	// буфер для чтения из клиентского сокета
 	buf := make([]byte, 4096)
@@ -191,7 +184,7 @@ func (q *queryData) SetData(conn *net.TCPConn) (error) {
 			if err == io.EOF {
 				err = fmt.Errorf("Клиент преждевременно закрыл соединение: %w", err)
 			}
-			return err
+			return nil, err
 		}
 		// добавляем к итоговому срезу считанные в буфер данные
 		data = append(data, buf[:n]...)
@@ -201,14 +194,23 @@ func (q *queryData) SetData(conn *net.TCPConn) (error) {
 			break
 		}
 	}
-	// записать данные запроса в буфер структуры
-	q.data = data
-	return nil
+	return &queryData{
+		// записать данные запроса в буфер структуры
+		data: data,
+	}, nil
 }
 
-func (q *queryData) SetParsedQuery(data []byte) (error) {
+func (q *queryData) ParsedQueryString() *parsequeryf.QueryString {
+	return q.parsedQueryString
+}
+func (q *queryData) ParsedReqHeaders() parsequeryf.RequestHeaders {
+	return q.parsedReqHeaders
+}
+
+// распарсить строку запроса и заголовки
+func (q *queryData) SetParsedQuery() error {
 	// распарсить строку запроса в структуру, заголовки - в map
-	queryLine, reqhead, err := parsequeryf.ParseQueryString(data)
+	queryLine, reqhead, err := parsequeryf.ParseQueryString(q.data)
 	// отправить в клиентский сокет ошибку
 	if err != nil {
 		return err
@@ -219,21 +221,151 @@ func (q *queryData) SetParsedQuery(data []byte) (error) {
 	return nil
 }
 
-// файл и информация о нем
-type fileData struct {
-	file *os.File
-	fileInfo fs.FileInfo
+// структура с данными обрабатываемого соединения
+type Connection struct {
+	conn     *net.TCPConn
+	rootPath string
+	template *template.Template
 }
 
-func (f *fileData) File() *os.File {
-	return f.file
+// создать структуру с данными обрабатываемого соединения
+func NewConnection(conn *net.TCPConn, rootPath string, template *template.Template) *Connection {
+	return &Connection{
+		conn:     conn,
+		rootPath: rootPath,
+		template: template,
+	}
 }
 
-func (f *fileData) FileInfo() fs.FileInfo {
-	return f.fileInfo
+// обрабатываем клиентское соединение
+func (c *Connection) ProcessingConn() {
+	defer func() {
+		// закрыть клиентское соединение
+		err := c.conn.Close()
+		if err != nil {
+			log.ErrorLog.Println(err)
+		} else {
+			log.InfoLog.Printf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String())
+		}
+	}()
+
+	log.InfoLog.Printf("начинается работа с клиентским сокетом %s", c.conn.RemoteAddr().String())
+
+	// создать структуру с данными запроса
+	query, err := newQueryData(c.conn)
+	if err != nil {
+		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+		// так как не успели вычитать все данные, а клиент уже закрыл сокет
+		log.ErrorLog.Println(err)
+		return
+	}
+
+	// записать распарсенные строку запроса и заголовки
+	err = query.SetParsedQuery()
+	if err != nil {
+		log.ErrorLog.Println(err)
+		// некорректный запрос
+		err = sendResponseHeader(c.conn, &statusData{
+			code: statusBadRequest,
+		}, err)
+		log.ErrorLog.Println(err)
+	}
+
+	// логируем клиентские заголовки
+	log.InfoLog.Println("распарсили данные, поступившие от клиента:")
+
+	log.InfoLog.Printf("\"%v %v %v\" %v %v \"%v\"\n",
+		query.ParsedQueryString().Method(), query.ParsedQueryString().Path(), query.ParsedQueryString().Protocol(), c.conn.RemoteAddr().String(),
+		query.ParsedReqHeaders()["Host"], query.ParsedReqHeaders()["User-Agent"])
+
+	// работаем с путем до файла, взятым из строки запроса
+	path := filepath.Join(c.rootPath, query.ParsedQueryString().Path())
+
+	// открываем запрашиваемый файл
+	f, err := openFile(c.conn, path)
+	if err != nil {
+		log.ErrorLog.Println(err)
+		return
+	}
+
+	// закрыть файл
+	defer func() {
+		err := f.Close()
+		if err != nil {
+			log.ErrorLog.Println(err)
+		}
+	}()
+
+	log.InfoLog.Printf("определен путь до файла %s:", path)
+
+	// получить информацию о файле
+	fi, err := f.Stat()
+	if err != nil {
+		// файл не отправлен - 500
+		err = sendInternalServerError(c.conn, err)
+		log.ErrorLog.Printf("файл %s не готов к отправке: %w", path, err)
+		return
+	}
+
+	// если файл - каталог, выводим его содержимое
+	if fi.IsDir() {
+		err := c.workingWithCatalog(query.ParsedQueryString().Path())
+		if err != nil {
+			log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, query.ParsedQueryString().Path()), err)
+		}
+		log.InfoLog.Printf("клиенту отправлен html файл с содержимым %s", filepath.Join(c.rootPath, query.ParsedQueryString().Path()))
+		return
+	}
+
+	// отправляем клиенту заголовки
+	err = sendResponseHeader(c.conn, &statusData{
+		code: statusOK,
+		size: fi.Size(),
+		name: fi.Name(),
+	}, nil)
+	if err != nil {
+		log.ErrorLog.Println(err)
+		return
+	}
+
+	// отправить файл клиенту
+	if err = filef.SendFile(c.conn, f, fi.Size()); err != nil {
+		log.ErrorLog.Printf("файл не был отправлен клиенту: %w", err)
+	}
 }
 
-func (f *fileData) SetFile(w io.Writer, path string) error {
+// работаем с каталогом
+func (c *Connection) workingWithCatalog(queryPath string) error {
+	log.InfoLog.Printf("файл %s: is a directory", filepath.Join(c.rootPath, queryPath))
+
+	// выводим содержимое каталога
+	buf, err := dirf.ShowDir(c.conn, c.rootPath, queryPath, c.template)
+	if err != nil {
+		// содержимое каталога не готово к отправке - 500
+		err = sendInternalServerError(c.conn, err)
+		return err
+	}
+	// отправляем заголовки
+	err = sendResponseHeader(c.conn, &statusData{
+		code:        statusOK,
+		size:        int64(buf.Len()),
+		contentType: "text/html"}, nil)
+
+	if err != nil {
+		// заголовки не отправлены - 500
+		err = sendInternalServerError(c.conn, err)
+		return err
+	}
+	// записать содержимое буфера в клиентский сокет
+	_, err = c.conn.Write(buf.Bytes())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// получаем дескриптор открытого файла
+func openFile(w io.Writer, path string) (*os.File, error) {
 	var respdata *statusData
 
 	file, err := filef.OpenFile(w, path)
@@ -260,120 +392,9 @@ func (f *fileData) SetFile(w io.Writer, path string) error {
 		}
 		// отправляем клиенту: ошибка при открытии файла
 		err = sendResponseHeader(w, respdata, err)
-		return err
+		return nil, err
 	}
-	
-	f.file = file
-	return nil	
-}
-
-func (f *fileData) SetFileInfo(w io.Writer) error {
-	// получить информацию о файле
-	fi, err := f.File().Stat()
-	if err != nil {
-		// файл не отправлен - 500
-		err = sendInternalServerError(w, err)
-		return err
-	}
-	f.fileInfo = fi
-	return nil
-}
-
-// обрабатываем клиентское соединение
-func ProcessingConn(conn *net.TCPConn, rootPath string, template *template.Template) {
-	defer func() {
-		// закрыть клиентское соединение
-		err := conn.Close()
-		if err != nil {
-			log.ErrorLog.Println(err)
-		} else {
-			log.InfoLog.Printf("клиентское соединение %s закрыто", conn.RemoteAddr().String())
-		}
-	}()
-
-	log.InfoLog.Printf("начинается работа с клиентским сокетом %s", conn.RemoteAddr().String())
-
-	// данные запроса
-	query := queryData{}
-	
-	// записать данные запроса
-	err := query.SetData(conn)
-	if err != nil {
-		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
-		// так как не успели вычитать все данные, а клиент уже закрыл сокет
-		log.ErrorLog.Println(err)
-		return
-	}
-
-	// записать распарсенные строку запроса и заголовки
-	err = query.SetParsedQuery(query.Data())
-	if err != nil {
-		log.ErrorLog.Println(err)
-		// некорректный запрос
-		err = sendResponseHeader(conn, &statusData{
-			code: statusBadRequest,
-		}, err)
-		log.ErrorLog.Println(err)
-	}
-
-	// логируем клиентские заголовки
-	log.InfoLog.Println("распарсили данные, поступившие от клиента:")
-
-	log.InfoLog.Printf("\"%v %v %v\" %v %v \"%v\"\n",
-		query.ParsedQueryString().Method(), query.ParsedQueryString().Path(), query.ParsedQueryString().Protocol(), conn.RemoteAddr().String(), 
-		query.ParsedReqHeaders()["Host"], query.ParsedReqHeaders()["User-Agent"])
-
-	// работаем с путем до файла, взятым из строки запроса
-	path := filepath.Join(rootPath, query.ParsedQueryString().Path())
-
-	// файл и его данные
-	f := fileData{}
-
-	// записываем запрашиваемый файл
-	err = f.SetFile(conn, path)
-	if err != nil {
-		log.ErrorLog.Println(err)
-		return
-	}
-
-	// закрыть файл
-	defer func() {
-		err := f.File().Close()
-		if err != nil {
-			log.ErrorLog.Println(err)
-		}
-	}()
-
-	log.InfoLog.Printf("определен путь до файла %s:", path)
-
-	// записать информацию о файле
-	err = f.SetFileInfo(conn)
-	if err != nil {
-		log.ErrorLog.Printf("файл %s не готов к отправке: %w", path, err)
-		return
-	}
-
-	// если файл - каталог, выводим его содержимое
-	if f.FileInfo().IsDir() {
-		workingWithCatalog(conn, rootPath, query.ParsedQueryString().Path(), template)
-		return
-	}
-
-	// отправляем клиенту заголовки
-	err = sendResponseHeader(conn, &statusData{
-		code: statusOK,
-		size: f.FileInfo().Size(),
-		name: f.FileInfo().Name(),
-	}, nil)
-	if err != nil {
-		log.ErrorLog.Println(err)
-		return
-	}
-
-	// отправить файл клиенту
-	if err = filef.SendFile(conn, f.File(), f.FileInfo().Size()); err != nil {
-		log.ErrorLog.Printf("файл не был отправлен клиенту: %w", err)
-	}
+	return file, nil
 }
 
 // отправляем заголоки с ошибкой 500
@@ -382,39 +403,6 @@ func sendInternalServerError(w io.Writer, mainError error) error {
 		code: statusInternalServerError,
 	}, mainError)
 	return err
-}
-
-func workingWithCatalog(w *net.TCPConn, rootPath, queryPath string, template *template.Template) {
-	log.InfoLog.Printf("файл %s: is a directory", filepath.Join(rootPath, queryPath))
-
-	// выводим содержимое каталога
-	buf, err := dirf.ShowDir(w, rootPath, queryPath, template)
-	if err != nil {
-		// содержимое каталога не готово к отправке - 500
-		err = sendInternalServerError(w, err)
-		log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(rootPath, queryPath), err)
-		return
-	}
-	// отправляем заголовки
-	err = sendResponseHeader(w, &statusData{
-		code:        statusOK,
-		size:        int64(buf.Len()),
-		contentType: "text/html"}, nil)
-
-	if err != nil {
-		// заголовки не отправлены - 500
-		err = sendInternalServerError(w, err)
-		log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(rootPath, queryPath), err)
-		return
-	}
-	// записать содержимое буфера в клиентский сокет
-	_, err = w.Write(buf.Bytes())
-	if err != nil {
-		log.ErrorLog.Println(err)
-		return
-	}
-	log.InfoLog.Printf("клиенту отправлен html файл с содержимым %s", filepath.Join(rootPath, queryPath))
-	return
 }
 
 // отправляем клиенту заголовки ответа

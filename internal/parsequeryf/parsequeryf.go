@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// структура с содержимым строки запроса
 type QueryString struct {
 	method   string
 	path     string
@@ -22,6 +23,7 @@ func (q *QueryString) Protocol() string {
 	return q.protocol
 }
 
+// заголовки запроса
 type RequestHeaders map[string]string
 
 var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")

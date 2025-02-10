@@ -81,7 +81,10 @@ func main() {
 		}
 		mlog.InfoLog.Printf("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
 
+		// создаем структуру с данными клиентского соединения
+		connection := netf.NewConnection(conn, rootPath, t)
+
 		// обрабатываем каждое клиентское соединение в отдельной горутине
-		go netf.ProcessingConn(conn, rootPath, t)
+		go connection.ProcessingConn()
 	}
 }

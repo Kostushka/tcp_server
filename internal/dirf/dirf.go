@@ -3,7 +3,6 @@ package dirf
 import (
 	"bytes"
 	"html/template"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -11,7 +10,7 @@ import (
 )
 
 // отправляем клиенту содержимое каталога
-func ShowDir(w io.Writer, rootPath, queryPath string, t *template.Template) (*bytes.Buffer, error) {
+func ShowDir(rootPath, queryPath string, t *template.Template) (*bytes.Buffer, error) {
 	type args struct {
 		RootPath string
 		DirName  string

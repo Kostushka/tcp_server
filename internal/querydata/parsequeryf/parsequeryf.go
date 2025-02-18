@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")
+
 // структура с содержимым строки запроса
 type QueryString struct {
 	method   string
@@ -26,22 +28,32 @@ func (q *QueryString) Protocol() string {
 // заголовки запроса
 type RequestHeaders map[string]string
 
-var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")
-
-// парсим строку запроса в структуру, заголовки - в map
-func ParseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
+// создаем структуру со строкой и map с заголовками запроса
+func NewParseQueryData(data []byte) (*QueryString, RequestHeaders, error) {
 	// структура с данными строки запроса HTTP-протокола
 	q := QueryString{}
 	// map с заголовками запроса
 	reqhead := make(RequestHeaders, 5)
 
+	// парсим строку запроса в структуру
+	endQueryString, err := q.parseQueryString(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	// парсим заголовки в map
+	reqhead.parseRequestHeaders(data, endQueryString)
+	return &q, reqhead, nil
+}
+
+// парсим строку запроса в структуру
+func (q *QueryString) parseQueryString(data []byte) (int, error) {
 	// читаем строку из буфера
 	var queryBuf strings.Builder
 	var i int
 	// в конце строки ожидаем либо \r\n, либо \n
 	for i = 0; string(data[i]) != "\r" && string(data[i]) != "\n"; i++ {
 		if err := queryBuf.WriteByte(data[i]); err != nil {
-			return nil, nil, err
+			return 0, err
 		}
 	}
 	// если в конце строки \r\n - пропускаем два символа для перехода на новую строку
@@ -54,20 +66,25 @@ func ParseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
 	buf := strings.Split(trimQueryStringSpace(queryBuf.String()), " ")
 	// в буфере должно быть 3 элемента: метод, путь, версия протокола
 	if len(buf) < 3 {
-		return nil, nil, ErrInvalidHttpReq
+		return 0, ErrInvalidHttpReq
 	}
 	// декодируем path на случай, если он не в латинице
 	convertPath, err := url.QueryUnescape(buf[1])
 	if err != nil {
-		return nil, nil, err
+		return 0, err
 	}
 	q.method = buf[0]
 	q.path = convertPath
 	q.protocol = buf[2]
 
+	return i, nil
+}
+
+// парсим заголовки в map
+func (r RequestHeaders) parseRequestHeaders(data []byte, i int) {
 	// парсим заголовки
 	headerBuf := data[i:]
-	buf = strings.Split(string(headerBuf), "\r\n")
+	buf := strings.Split(string(headerBuf), "\r\n")
 	// если в конце строки не \r\n, а \n
 	if len(buf) == 1 {
 		buf = strings.Split(string(headerBuf), "\n")
@@ -75,9 +92,8 @@ func ParseQueryString(data []byte) (*QueryString, RequestHeaders, error) {
 	// в конце после заголовков ожидаем пустую строку
 	for j := 0; buf[j] != ""; j++ {
 		hb := strings.Split(buf[j], ":")
-		reqhead[hb[0]] = strings.TrimSpace(hb[1])
+		r[hb[0]] = strings.TrimSpace(hb[1])
 	}
-	return &q, reqhead, nil
 }
 
 // учитываем, что строка запроса может содержать более одного пробела, например:

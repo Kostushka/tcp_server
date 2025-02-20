@@ -20,7 +20,7 @@ func ShowDir(rootPath, queryPath string, t *template.Template) (*bytes.Buffer, e
 	// получаем файлы, находящиеся в каталоге
 	files, err := os.ReadDir(filepath.Join(rootPath, queryPath))
 	if err != nil {
-		log.ErrorLog.Println(err)
+		log.Errorf(err)
 		return nil, err
 	}
 

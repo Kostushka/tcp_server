@@ -1,6 +1,6 @@
 package querydata
 
-import 	(	
+import (
 	"github.com/Kostushka/tcp_server/internal/querydata/parsequeryf"
 )
 
@@ -19,12 +19,12 @@ func New(data []byte) (*queryData, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &queryData{
 		// записать данные запроса в буфер структуры
-		data: data,
+		data:              data,
 		parsedQueryString: queryLine,
-		parsedReqHeaders: reqhead,
+		parsedReqHeaders:  reqhead,
 	}, nil
 }
 

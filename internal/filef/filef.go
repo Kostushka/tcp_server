@@ -43,6 +43,6 @@ func SendFile(w io.Writer, f *os.File, fileSize int64) error {
 			return err
 		}
 	}
-	log.InfoLog.Printf("клиенту отправлено тело ответа")
+	log.Infof("клиенту отправлено тело ответа")
 	return nil
 }

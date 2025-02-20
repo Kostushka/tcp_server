@@ -1,9 +1,9 @@
 package configf
 
 import (
+	"errors"
 	"flag"
 	"net"
-	"errors"
 )
 
 var (
@@ -13,10 +13,10 @@ var (
 
 // данные для конфигурации сервера
 type configData struct {
-	rootPath string
+	rootPath      string
 	listenAddress net.IP
-	port int
-	fileTemplate string
+	port          int
+	fileTemplate  string
 }
 
 func (c *configData) RootPath() string {
@@ -64,9 +64,9 @@ func NewConfigData() (*configData, error) {
 	}
 
 	return &configData{
-		rootPath: rootPath,
+		rootPath:      rootPath,
 		listenAddress: addr,
-		port: port,
-		fileTemplate: fileTemplate,
+		port:          port,
+		fileTemplate:  fileTemplate,
 	}, nil
 }

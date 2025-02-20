@@ -91,8 +91,8 @@ func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders t
 	if err != nil {
 		return err
 	}
-	log.InfoLog.Println("---")
-	log.InfoLog.Printf("%s", statusString.String())
+	log.Infof("---")
+	log.Infof("%s", statusString.String())
 
 	// сформировать буфер с заголовками ответа
 	var headers strings.Builder
@@ -102,15 +102,15 @@ func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders t
 		if err != nil {
 			return err
 		}
-		log.InfoLog.Println(v)
+		log.Infof(v)
 	}
-	log.InfoLog.Println("---")
+	log.Infof("---")
 	// записать в клиентский сокет заголовки ответа
 	_, err = w.Write([]byte(headers.String() + "\n"))
 	if err != nil {
 		return err
 	}
 
-	log.InfoLog.Printf("клиенту отправлены заголовки ответа")
+	log.Infof("клиенту отправлены заголовки ответа")
 	return nil
 }

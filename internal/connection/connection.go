@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"html/template"
@@ -9,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"bytes"
 
 	"github.com/Kostushka/tcp_server/internal/connection/constants"
 	"github.com/Kostushka/tcp_server/internal/connection/headerdata"
@@ -70,17 +70,17 @@ func (c *Connection) ProcessingConn() {
 	// закрыть клиентское соединение
 	defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String()))
 
-	log.InfoLog.Printf("начинается работа с клиентским сокетом %s", c.conn.RemoteAddr().String())
+	log.Infof("начинается работа с клиентским сокетом %s", c.conn.RemoteAddr().String())
 
 	// получить данные запроса
 	data, err := c.ReadConn()
 	if err != nil {
 		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
 		// так как не успели вычитать все данные, а клиент уже закрыл сокет
-		log.ErrorLog.Println(err)
+		log.Errorf(err)
 		return
 	}
-	
+
 	// создать структуру с данными запроса
 	query, err := querydata.New(data)
 	if err != nil {
@@ -91,14 +91,14 @@ func (c *Connection) ProcessingConn() {
 			}, err)
 			return
 		}
-		log.ErrorLog.Println(err)
+		log.Errorf(err)
 		return
 	}
 
 	// логируем клиентские заголовки
-	log.InfoLog.Println("распарсили данные, поступившие от клиента:")
+	log.Infof("распарсили данные, поступившие от клиента:")
 
-	log.InfoLog.Printf("\"%v %v %v\" %v %v \"%v\"\n",
+	log.Infof("\"%v %v %v\" %v %v \"%v\"\n",
 		query.ParsedQueryString().Method(), query.ParsedQueryString().Path(), query.ParsedQueryString().Protocol(), c.conn.RemoteAddr().String(),
 		query.ParsedReqHeaders()["Host"], query.ParsedReqHeaders()["User-Agent"])
 
@@ -108,25 +108,25 @@ func (c *Connection) ProcessingConn() {
 	// открываем запрашиваемый файл
 	f, fi, err := c.openFile(path)
 	if err != nil {
-		log.ErrorLog.Println(err)
+		log.Errorf(err)
 		return
 	}
 
 	// закрыть файл
 	defer Close(f, "")
 
-	log.InfoLog.Printf("определен путь до файла %s:", path)
+	log.Infof("определен путь до файла %s:", path)
 
 	// если файл - каталог, выводим его содержимое
 	if fi.IsDir() {
 		c.workingWithCatalog(query.ParsedQueryString().Path())
 		return
 	}
-	
+
 	// отправить клиенту заголовки и файл
 	err = c.SendFile(f, fi)
 	if err != nil {
-		log.ErrorLog.Println(err)
+		log.Errorf(err)
 	}
 }
 
@@ -138,7 +138,7 @@ func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 		Name: fi.Name(),
 	}, nil)
 	if err != nil {
-		log.ErrorLog.Println(err)
+		log.Errorf(err)
 		return err
 	}
 	// отправить файл клиенту
@@ -150,14 +150,14 @@ func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 
 // работаем с каталогом
 func (c *Connection) workingWithCatalog(queryPath string) {
-	log.InfoLog.Printf("файл %s: is a directory", filepath.Join(c.rootPath, queryPath))
+	log.Infof("файл %s: is a directory", filepath.Join(c.rootPath, queryPath))
 
 	// выводим содержимое каталога
 	buf, err := dirf.ShowDir(c.rootPath, queryPath, c.template)
 	if err != nil {
 		// содержимое каталога не готово к отправке - 500
 		err = c.sendInternalServerError(err)
-		log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, queryPath), err)
+		log.Errorf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, queryPath), err)
 		return
 	}
 	// отправляем заголовки
@@ -167,16 +167,16 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 		ContentType: "text/html"}, nil)
 
 	if err != nil {
-		log.ErrorLog.Printf("не удалось отправить заголовки: %w", err)
+		log.Errorf("не удалось отправить заголовки: %w", err)
 		return
 	}
 	// записать содержимое буфера в клиентский сокет
 	_, err = c.conn.Write(buf.Bytes())
 	if err != nil {
-		log.ErrorLog.Printf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, queryPath), err)
+		log.Errorf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, queryPath), err)
 		return
 	}
-	log.InfoLog.Printf("клиенту отправлен html файл с содержимым %s", filepath.Join(c.rootPath, queryPath))
+	log.Infof("клиенту отправлен html файл с содержимым %s", filepath.Join(c.rootPath, queryPath))
 }
 
 // получаем дескриптор открытого файла
@@ -244,10 +244,10 @@ func (c *Connection) sendResponseHeader(statusData *types.StatusData, mainError 
 func Close(c io.Closer, m string) {
 	err := c.Close()
 	if err != nil {
-		log.ErrorLog.Println(err)
-		return 
+		log.Errorf(err)
+		return
 	}
 	if m != "" {
-		log.InfoLog.Println(m)
+		log.Infof(m)
 	}
 }

@@ -6,9 +6,9 @@ import (
 	"net"
 	"os"
 
-	mlog "github.com/Kostushka/tcp_server/internal/log"
-	"github.com/Kostushka/tcp_server/internal/connection"
 	"github.com/Kostushka/tcp_server/internal/configf"
+	"github.com/Kostushka/tcp_server/internal/connection"
+	mlog "github.com/Kostushka/tcp_server/internal/log"
 )
 
 func main() {
@@ -42,15 +42,15 @@ func main() {
 	}
 	defer connection.Close(l, "")
 
-	mlog.InfoLog.Printf("Запуск сервера с адресом %v на порту %d", laddr.IP, laddr.Port)
+	mlog.Infof("Запуск сервера с адресом %v на порту %d", laddr.IP, laddr.Port)
 	for {
-		mlog.InfoLog.Printf("tcp сокет слушает соединения")
+		mlog.Infof("tcp сокет слушает соединения")
 		// слушаем сокетные соединения (запросы)
 		conn, err := l.AcceptTCP()
 		if err != nil {
-			mlog.ErrorLog.Println(err)
+			mlog.Errorf(err)
 		}
-		mlog.InfoLog.Printf("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
+		mlog.Infof("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
 
 		// создаем структуру с данными клиентского соединения и обрабатываем каждое клиентское соединение в отдельной горутине
 		go connection.New(conn, configData.RootPath(), t).ProcessingConn()

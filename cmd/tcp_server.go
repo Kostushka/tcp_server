@@ -18,6 +18,12 @@ func main() {
 		log.Fatalf("сервер не может быть запущен: %v", err)
 	}
 
+	// создать логеры
+	err = mlog.New(configData.Log())
+	if err != nil {
+		log.Fatalf("сервер не может быть запущен: %v", err)
+	}
+
 	// парсим шаблон для отображения имен файлов
 	templ, err := os.ReadFile(configData.FileTemplate())
 	if err != nil {

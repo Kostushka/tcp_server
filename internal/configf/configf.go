@@ -16,6 +16,7 @@ type configData struct {
 	rootPath      string
 	listenAddress net.IP
 	port          int
+	log           string
 	fileTemplate  string
 }
 
@@ -27,6 +28,9 @@ func (c *configData) ListenAddress() net.IP {
 }
 func (c *configData) Port() int {
 	return c.port
+}
+func (c *configData) Log() string {
+	return c.log
 }
 func (c *configData) FileTemplate() string {
 	return c.fileTemplate
@@ -45,6 +49,10 @@ func NewConfigData() (*configData, error) {
 	// должен быть указан порт, на которм сервер будет принимаь запросы на соединение
 	var port int
 	flag.IntVar(&port, "port", 5000, "a port")
+
+	// должно быть указано имя файла для записи лога в него, иначе вывод лога будет в stdout
+	var log string
+	flag.StringVar(&log, "log", "", "output log to file")
 
 	// должен быть указан путь до файла шаблона с отображением имен файлов
 	var fileTemplate string
@@ -67,6 +75,7 @@ func NewConfigData() (*configData, error) {
 		rootPath:      rootPath,
 		listenAddress: addr,
 		port:          port,
+		log:           log,
 		fileTemplate:  fileTemplate,
 	}, nil
 }

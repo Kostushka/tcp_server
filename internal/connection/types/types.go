@@ -7,9 +7,6 @@ type ResponseStatusLine struct {
 	Phrase  string
 }
 
-// заголовки ответа
-type ResponseHeaders []string
-
 // собираемые данные для строки статуса и заголовков ответа
 type StatusData struct {
 	Code        int

@@ -6,14 +6,14 @@ import (
 	"net"
 	"os"
 
-	"github.com/Kostushka/tcp_server/internal/configf"
+	"github.com/Kostushka/tcp_server/internal/config"
 	"github.com/Kostushka/tcp_server/internal/connection"
 	mlog "github.com/Kostushka/tcp_server/internal/log"
 )
 
 func main() {
 	// получить данные для конфигурации сервера
-	configData, err := configf.NewConfigData()
+	configData, err := config.NewConfigData()
 	if err != nil {
 		log.Fatalf("сервер не может быть запущен: %v", err)
 	}

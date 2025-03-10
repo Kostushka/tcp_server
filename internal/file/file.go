@@ -1,4 +1,4 @@
-package filef
+package file
 
 import (
 	"io"
@@ -8,7 +8,7 @@ import (
 )
 
 // открываем файл по пути
-func OpenFile(w io.Writer, path string) (*os.File, error) {
+func Open(w io.Writer, path string) (*os.File, error) {
 	// открываем запрашиваемый файл
 	f, err := os.Open(path)
 
@@ -19,7 +19,7 @@ func OpenFile(w io.Writer, path string) (*os.File, error) {
 }
 
 // отправляем клиенту файл
-func SendFile(w io.Writer, f *os.File, fileSize int64) error {
+func Send(w io.Writer, f *os.File, fileSize int64) error {
 	// читаем файл
 	fileBuf := make([]byte, 4096) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
 	// curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:

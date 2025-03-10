@@ -1,4 +1,4 @@
-package dirf
+package dir
 
 import (
 	"bytes"

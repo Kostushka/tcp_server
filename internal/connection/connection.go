@@ -11,14 +11,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Kostushka/tcp_server/internal/connection/constants"
+	"github.com/Kostushka/tcp_server/internal/connection/consts"
 	"github.com/Kostushka/tcp_server/internal/connection/headerdata"
 	"github.com/Kostushka/tcp_server/internal/connection/types"
-	"github.com/Kostushka/tcp_server/internal/dirf"
-	"github.com/Kostushka/tcp_server/internal/filef"
+	"github.com/Kostushka/tcp_server/internal/dir"
+	"github.com/Kostushka/tcp_server/internal/file"
 	"github.com/Kostushka/tcp_server/internal/log"
 	"github.com/Kostushka/tcp_server/internal/querydata"
-	"github.com/Kostushka/tcp_server/internal/querydata/parsequeryf"
 )
 
 // структура с данными обрабатываемого соединения
@@ -37,8 +36,73 @@ func New(conn *net.TCPConn, rootPath string, template *template.Template) *Conne
 	}
 }
 
+// обрабатываем клиентское соединение
+func (c *Connection) ProcessingConn() {
+	// закрыть клиентское соединение
+	defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String()))
+
+	log.Infof("начинается работа с клиентским сокетом %s", c.conn.RemoteAddr().String())
+
+	// получить данные запроса
+	data, err := c.readConn()
+	if err != nil {
+		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
+		// так как не успели вычитать все данные, а клиент уже закрыл сокет
+		log.Errorf(err)
+		return
+	}
+
+	// создать структуру с данными запроса
+	query, err := querydata.New(data)
+	if err != nil {
+		// некорректный запрос
+		if errors.Is(err, querydata.ErrInvalidHttpReq) {
+			err = c.sendResponseHeader(&types.StatusData{
+				Code: consts.StatusBadRequest,
+			}, err)
+			return
+		}
+		log.Errorf(err)
+		return
+	}
+
+	// логируем клиентские заголовки
+	log.Infof("распарсили данные, поступившие от клиента:")
+
+	log.Infof("\"%v %v %v\" %v %v \"%v\"\n",
+		query.ParsedQueryString.Method(), query.ParsedQueryString.Path(), query.ParsedQueryString.Protocol(), c.conn.RemoteAddr().String(),
+		query.ParsedReqHeaders["Host"], query.ParsedReqHeaders["User-Agent"])
+
+	// работаем с путем до файла, взятым из строки запроса
+	path := filepath.Join(c.rootPath, query.ParsedQueryString.Path())
+
+	// открываем запрашиваемый файл
+	f, fi, err := c.openFile(path)
+	if err != nil {
+		log.Errorf(err)
+		return
+	}
+
+	// закрыть файл
+	defer Close(f, "")
+
+	log.Infof("определен путь до файла %s:", path)
+
+	// если файл - каталог, выводим его содержимое
+	if fi.IsDir() {
+		c.workingWithCatalog(query.ParsedQueryString.Path())
+		return
+	}
+
+	// отправить клиенту заголовки и файл
+	err = c.SendFile(f, fi)
+	if err != nil {
+		log.Errorf(err)
+	}
+}
+
 // прочитать из клиентского сокета данные в буфер
-func (c *Connection) ReadConn() ([]byte, error) {
+func (c *Connection) readConn() ([]byte, error) {
 	// буфер для чтения из клиентского сокета
 	buf := make([]byte, 4096)
 
@@ -65,75 +129,10 @@ func (c *Connection) ReadConn() ([]byte, error) {
 	return data, nil
 }
 
-// обрабатываем клиентское соединение
-func (c *Connection) ProcessingConn() {
-	// закрыть клиентское соединение
-	defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String()))
-
-	log.Infof("начинается работа с клиентским сокетом %s", c.conn.RemoteAddr().String())
-
-	// получить данные запроса
-	data, err := c.ReadConn()
-	if err != nil {
-		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
-		// так как не успели вычитать все данные, а клиент уже закрыл сокет
-		log.Errorf(err)
-		return
-	}
-
-	// создать структуру с данными запроса
-	query, err := querydata.New(data)
-	if err != nil {
-		// некорректный запрос
-		if errors.Is(err, parsequeryf.ErrInvalidHttpReq) {
-			err = c.sendResponseHeader(&types.StatusData{
-				Code: constants.StatusBadRequest,
-			}, err)
-			return
-		}
-		log.Errorf(err)
-		return
-	}
-
-	// логируем клиентские заголовки
-	log.Infof("распарсили данные, поступившие от клиента:")
-
-	log.Infof("\"%v %v %v\" %v %v \"%v\"\n",
-		query.ParsedQueryString().Method(), query.ParsedQueryString().Path(), query.ParsedQueryString().Protocol(), c.conn.RemoteAddr().String(),
-		query.ParsedReqHeaders()["Host"], query.ParsedReqHeaders()["User-Agent"])
-
-	// работаем с путем до файла, взятым из строки запроса
-	path := filepath.Join(c.rootPath, query.ParsedQueryString().Path())
-
-	// открываем запрашиваемый файл
-	f, fi, err := c.openFile(path)
-	if err != nil {
-		log.Errorf(err)
-		return
-	}
-
-	// закрыть файл
-	defer Close(f, "")
-
-	log.Infof("определен путь до файла %s:", path)
-
-	// если файл - каталог, выводим его содержимое
-	if fi.IsDir() {
-		c.workingWithCatalog(query.ParsedQueryString().Path())
-		return
-	}
-
-	// отправить клиенту заголовки и файл
-	err = c.SendFile(f, fi)
-	if err != nil {
-		log.Errorf(err)
-	}
-}
-
 func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 	// отправляем клиенту заголовки
 	err := c.sendResponseHeader(&types.StatusData{
-		Code: constants.StatusOK,
+		Code: consts.StatusOK,
 		Size: fi.Size(),
 		Name: fi.Name(),
 	}, nil)
@@ -142,7 +141,7 @@ func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 		return err
 	}
 	// отправить файл клиенту
-	if err = filef.SendFile(c.conn, f, fi.Size()); err != nil {
+	if err = file.Send(c.conn, f, fi.Size()); err != nil {
 		return fmt.Errorf("файл не был отправлен клиенту: %w", err)
 	}
 	return nil
@@ -153,7 +152,7 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 	log.Infof("файл %s: is a directory", filepath.Join(c.rootPath, queryPath))
 
 	// выводим содержимое каталога
-	buf, err := dirf.ShowDir(c.rootPath, queryPath, c.template)
+	buf, err := dir.ShowDir(c.rootPath, queryPath, c.template)
 	if err != nil {
 		// содержимое каталога не готово к отправке - 500
 		err = c.sendInternalServerError(err)
@@ -162,7 +161,7 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 	}
 	// отправляем заголовки
 	err = c.sendResponseHeader(&types.StatusData{
-		Code:        constants.StatusOK,
+		Code:        consts.StatusOK,
 		Size:        int64(buf.Len()),
 		ContentType: "text/html"}, nil)
 
@@ -183,26 +182,26 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 func (c *Connection) openFile(path string) (*os.File, os.FileInfo, error) {
 	var respdata *types.StatusData
 
-	file, err := filef.OpenFile(c.conn, path)
+	file, err := file.Open(c.conn, path)
 	if err != nil {
 		switch {
 		// файл должен быть, иначе 404
 		case errors.Is(err, fs.ErrNotExist):
 			// создаем ответ сервера для клиента: файл не найден
 			respdata = &types.StatusData{
-				Code: constants.StatusNotFound,
+				Code: consts.StatusNotFound,
 			}
 		// файл должен быть доступен, иначе 403
 		case errors.Is(err, fs.ErrPermission):
 			// создаем ответ сервера для клиента: доступ к файлу запрещен
 			respdata = &types.StatusData{
-				Code: constants.StatusForbidden,
+				Code: consts.StatusForbidden,
 			}
 		// файл не был открыт - 500
 		default:
 			// создаем ответ сервера для клиента: ошибка со стороны сервера
 			respdata = &types.StatusData{
-				Code: constants.StatusInternalServerError,
+				Code: consts.StatusInternalServerError,
 			}
 		}
 		// отправляем клиенту: ошибка при открытии файла
@@ -222,7 +221,7 @@ func (c *Connection) openFile(path string) (*os.File, os.FileInfo, error) {
 // отправляем заголоки с ошибкой 500
 func (c *Connection) sendInternalServerError(mainError error) error {
 	err := c.sendResponseHeader(&types.StatusData{
-		Code: constants.StatusInternalServerError,
+		Code: consts.StatusInternalServerError,
 	}, mainError)
 	return err
 }

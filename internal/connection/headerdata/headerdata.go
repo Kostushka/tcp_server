@@ -9,10 +9,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Kostushka/tcp_server/internal/connection/constants"
+	"github.com/Kostushka/tcp_server/internal/connection/consts"
 	"github.com/Kostushka/tcp_server/internal/connection/types"
 	"github.com/Kostushka/tcp_server/internal/log"
 )
+
+// заголовки ответа
+type responseHeaders []string
+
+// добавить заголовок
+func (r *responseHeaders) Add(headerName, headerValue string) {
+	*r = append(*r, headerName+": "+headerValue)
+}
+
+// сформировать буфер с заголовками
+func (r *responseHeaders) ToBytes() string {
+	var headers strings.Builder
+	for _, v := range *r {
+		header := v + "\n"
+		_, err := headers.WriteString(header)
+		if err != nil {
+			log.Errorf("заголовок %q не был записан в буфер: %v", v, err)
+		}
+		log.Infof(v)
+	}
+	return headers.String()
+}
 
 // структура с сформированными данными для строки статуса и заголовков ответа
 type HeaderData struct {
@@ -42,73 +64,63 @@ func (h *HeaderData) WriteResponseHeader(w io.Writer) error {
 		Status:  h.responseData.Status,
 		Phrase:  h.responseData.Phrase,
 	}
-	respHeaders := types.ResponseHeaders{}
+	respHeaders := responseHeaders{}
 
-	respHeaders = append(respHeaders, "Server: someserver/1.18.0")
-	respHeaders = append(respHeaders, "Connection: close")
-	respHeaders = append(respHeaders, "Date: "+time.Now().Format(time.UnixDate))
+	respHeaders.Add("Server", "someserver/1.18.0")
+	respHeaders.Add("Connection", "close")
+	respHeaders.Add("Date", time.Now().Format(time.UnixDate))
 	if h.responseData.Size != "" {
-		respHeaders = append(respHeaders, "Size: "+h.responseData.Size)
+		respHeaders.Add("Size", h.responseData.Size)
 	}
 	// не пишем Content-Type, если ошибка
-	if h.responseData.Status != strconv.Itoa(constants.StatusOK) {
+	if h.responseData.Status != strconv.Itoa(consts.StatusOK) {
 		return writeToConn(w, respStatus, respHeaders)
 	}
 	if h.responseData.ContentType != "" {
-		respHeaders = append(respHeaders, "Content-Type: "+h.responseData.ContentType)
+		respHeaders.Add("Content-Type", h.responseData.ContentType)
 		return writeToConn(w, respStatus, respHeaders)
 	}
 
 	// если у файла в названии есть расширение, пишем тип файла в заголовок Content-Type
 	extIndex := strings.LastIndex(h.responseData.Name, ".")
 	if extIndex == -1 {
-		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
+		respHeaders.Add("Content-Type", "application/octet-stream")
 		// пишем ответ в клиентский сокет
 		return writeToConn(w, respStatus, respHeaders)
 	}
-	ext := h.responseData.Name[extIndex:]
-	contentType := mime.TypeByExtension(ext)
+	contentType := mime.TypeByExtension(h.responseData.Name[extIndex:])
 	if contentType == "" {
-		respHeaders = append(respHeaders, "Content-Type: application/octet-stream")
+		respHeaders.Add("Content-Type", "application/octet-stream")
 		// пишем ответ в клиентский сокет
 		return writeToConn(w, respStatus, respHeaders)
 	}
-	respHeaders = append(respHeaders, "Content-Type: "+contentType)
+	respHeaders.Add("Content-Type", contentType)
 
 	// пишем ответ в клиентский сокет
 	return writeToConn(w, respStatus, respHeaders)
 }
 
 // пишем заголовки в клиентский сокет
-func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders types.ResponseHeaders) error {
+func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders responseHeaders) error {
 	// сформировать статусную строку
-	var statusString strings.Builder
-
-	fmt.Fprintf(&statusString, "%s %s %s\n", respStatus.Version, respStatus.Status, respStatus.Phrase)
+	var statusString = respStatus.Version + " " + respStatus.Status + " " + respStatus.Phrase
 
 	// записать в клиентский сокет статусную строку
-	_, err := w.Write([]byte(statusString.String()))
+	_, err := w.Write([]byte(statusString))
 	if err != nil {
-		return err
+		return fmt.Errorf("строка статуса не была записана в сокет: %v", err)
 	}
 	log.Infof("---")
-	log.Infof("%s", statusString.String())
+	log.Infof(statusString)
 
 	// сформировать буфер с заголовками ответа
-	var headers strings.Builder
-	for _, v := range respHeaders {
-		header := v + "\n"
-		_, err := headers.WriteString(header)
-		if err != nil {
-			return err
-		}
-		log.Infof(v)
-	}
+	headers := respHeaders.ToBytes()
+
 	log.Infof("---")
 	// записать в клиентский сокет заголовки ответа
-	_, err = w.Write([]byte(headers.String() + "\n"))
+	_, err = w.Write([]byte(headers + "\n"))
 	if err != nil {
-		return err
+		return fmt.Errorf("заголовки не были записаны в сокет: %v", err)
 	}
 
 	log.Infof("клиенту отправлены заголовки ответа")

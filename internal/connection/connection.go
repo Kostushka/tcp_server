@@ -53,7 +53,7 @@ func (c *Connection) ProcessingConn() {
 	}
 
 	// создать структуру с данными запроса
-	query, err := querydata.New(data)
+	query, err := querydata.NewParseQueryData(data)
 	if err != nil {
 		// некорректный запрос
 		if errors.Is(err, querydata.ErrInvalidHttpReq) {
@@ -70,11 +70,11 @@ func (c *Connection) ProcessingConn() {
 	log.Infof("распарсили данные, поступившие от клиента:")
 
 	log.Infof("\"%v %v %v\" %v %v \"%v\"\n",
-		query.ParsedQueryString.Method(), query.ParsedQueryString.Path(), query.ParsedQueryString.Protocol(), c.conn.RemoteAddr().String(),
-		query.ParsedReqHeaders["Host"], query.ParsedReqHeaders["User-Agent"])
+		query.Method(), query.Path(), query.Protocol(), c.conn.RemoteAddr().String(),
+		query.Header("Host"), query.Header("User-Agent"))
 
 	// работаем с путем до файла, взятым из строки запроса
-	path := filepath.Join(c.rootPath, query.ParsedQueryString.Path())
+	path := filepath.Join(c.rootPath, query.Path())
 
 	// открываем запрашиваемый файл
 	f, fi, err := c.openFile(path)
@@ -86,11 +86,11 @@ func (c *Connection) ProcessingConn() {
 	// закрыть файл
 	defer Close(f, "")
 
-	log.Infof("определен путь до файла %s:", path)
+	log.Infof("определен путь до файла: %q", path)
 
 	// если файл - каталог, выводим его содержимое
 	if fi.IsDir() {
-		c.workingWithCatalog(query.ParsedQueryString.Path())
+		c.workingWithCatalog(query.Path())
 		return
 	}
 
@@ -149,14 +149,14 @@ func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 
 // работаем с каталогом
 func (c *Connection) workingWithCatalog(queryPath string) {
-	log.Infof("файл %s: is a directory", filepath.Join(c.rootPath, queryPath))
+	log.Infof("файл %q: is a directory", filepath.Join(c.rootPath, queryPath))
 
 	// выводим содержимое каталога
 	buf, err := dir.ShowDir(c.rootPath, queryPath, c.template)
 	if err != nil {
 		// содержимое каталога не готово к отправке - 500
 		err = c.sendInternalServerError(err)
-		log.Errorf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, queryPath), err)
+		log.Errorf("содержимое каталога %q не готово к отправке: %v", filepath.Join(c.rootPath, queryPath), err)
 		return
 	}
 	// отправляем заголовки
@@ -172,10 +172,10 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 	// записать содержимое буфера в клиентский сокет
 	_, err = c.conn.Write(buf.Bytes())
 	if err != nil {
-		log.Errorf("содержимое каталога %s не готово к отправке: %w", filepath.Join(c.rootPath, queryPath), err)
+		log.Errorf("содержимое каталога %q не готово к отправке: %v", filepath.Join(c.rootPath, queryPath), err)
 		return
 	}
-	log.Infof("клиенту отправлен html файл с содержимым %s", filepath.Join(c.rootPath, queryPath))
+	log.Infof("клиенту отправлен html файл с содержимым каталога %q", filepath.Join(c.rootPath, queryPath))
 }
 
 // получаем дескриптор открытого файла

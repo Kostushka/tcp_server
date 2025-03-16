@@ -9,26 +9,13 @@ import (
 
 // данные запроса
 type queryData struct {
-	data              []byte
-	ParsedQueryString *queryString
-	ParsedReqHeaders  requestHeaders
+	data []byte
+	*queryString
+	parsedReqHeaders requestHeaders
 }
 
-// создать структуру с данными запроса
-func New(data []byte) (*queryData, error) {
-	// распарсить строку запроса в структуру, заголовки - в map
-	queryLine, reqhead, err := NewParseQueryData(data)
-	// отправить в клиентский сокет ошибку
-	if err != nil {
-		return nil, err
-	}
-
-	return &queryData{
-		// записать данные запроса в буфер структуры
-		data:              data,
-		ParsedQueryString: queryLine,
-		ParsedReqHeaders:  reqhead,
-	}, nil
+func (q *queryData) Header(key string) string {
+	return q.parsedReqHeaders[key]
 }
 
 var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")
@@ -54,7 +41,7 @@ func (q *queryString) Protocol() string {
 type requestHeaders map[string]string
 
 // создаем структуру со строкой и map с заголовками запроса
-func NewParseQueryData(data []byte) (*queryString, requestHeaders, error) {
+func NewParseQueryData(data []byte) (*queryData, error) {
 	// структура с данными строки запроса HTTP-протокола
 	q := queryString{}
 	// map с заголовками запроса
@@ -63,11 +50,17 @@ func NewParseQueryData(data []byte) (*queryString, requestHeaders, error) {
 	// парсим строку запроса в структуру
 	endQueryString, err := q.parseQueryString(data)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// парсим заголовки в map
 	reqhead.parseRequestHeaders(data, endQueryString)
-	return &q, reqhead, nil
+
+	return &queryData{
+		// записать данные запроса в буфер структуры
+		data:             data,
+		queryString:      &q,
+		parsedReqHeaders: reqhead,
+	}, nil
 }
 
 // парсим строку запроса в структуру
@@ -78,7 +71,7 @@ func (q *queryString) parseQueryString(data []byte) (int, error) {
 	// в конце строки ожидаем либо \r\n, либо \n
 	for i = 0; string(data[i]) != "\r" && string(data[i]) != "\n"; i++ {
 		if err := queryBuf.WriteByte(data[i]); err != nil {
-			return 0, fmt.Errorf("не удалось распарсить строку запроса: %v", err)
+			return 0, fmt.Errorf("не удалось распарсить строку запроса: %w", err)
 		}
 	}
 	// если в конце строки \r\n - пропускаем два символа для перехода на новую строку
@@ -91,12 +84,12 @@ func (q *queryString) parseQueryString(data []byte) (int, error) {
 	buf := strings.Split(trimQueryStringSpace(queryBuf.String()), " ")
 	// в буфере должно быть 3 элемента: метод, путь, версия протокола
 	if len(buf) < 3 {
-		return 0, fmt.Errorf("не удалось распарсить строку запроса: %v", ErrInvalidHttpReq)
+		return 0, fmt.Errorf("не удалось распарсить строку запроса: %w", ErrInvalidHttpReq)
 	}
 	// декодируем path на случай, если он не в латинице
 	convertPath, err := url.QueryUnescape(buf[1])
 	if err != nil {
-		return 0, fmt.Errorf("не удалось распарсить строку запроса: %v", err)
+		return 0, fmt.Errorf("не удалось распарсить строку запроса: %w", err)
 	}
 	q.method = buf[0]
 	q.path = convertPath

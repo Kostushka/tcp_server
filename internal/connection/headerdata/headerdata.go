@@ -23,7 +23,7 @@ func (r *responseHeaders) Add(headerName, headerValue string) {
 }
 
 // сформировать буфер с заголовками
-func (r *responseHeaders) ToBytes() string {
+func (r *responseHeaders) ToBytes() []byte {
 	var headers strings.Builder
 	for _, v := range *r {
 		header := v + "\n"
@@ -33,7 +33,7 @@ func (r *responseHeaders) ToBytes() string {
 		}
 		log.Infof(v)
 	}
-	return headers.String()
+	return []byte(headers.String() + "\n")
 }
 
 // структура с сформированными данными для строки статуса и заголовков ответа
@@ -108,7 +108,7 @@ func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders r
 	// записать в клиентский сокет статусную строку
 	_, err := w.Write([]byte(statusString))
 	if err != nil {
-		return fmt.Errorf("строка статуса не была записана в сокет: %v", err)
+		return fmt.Errorf("строка статуса не была записана в сокет: %w", err)
 	}
 	log.Infof("---")
 	log.Infof(statusString)
@@ -118,9 +118,9 @@ func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders r
 
 	log.Infof("---")
 	// записать в клиентский сокет заголовки ответа
-	_, err = w.Write([]byte(headers + "\n"))
+	_, err = w.Write(headers)
 	if err != nil {
-		return fmt.Errorf("заголовки не были записаны в сокет: %v", err)
+		return fmt.Errorf("заголовки не были записаны в сокет: %w", err)
 	}
 
 	log.Infof("клиенту отправлены заголовки ответа")

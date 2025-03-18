@@ -1,6 +1,7 @@
 package headerdata
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"mime"
@@ -24,16 +25,16 @@ func (r *responseHeaders) Add(headerName, headerValue string) {
 
 // сформировать буфер с заголовками
 func (r *responseHeaders) ToBytes() []byte {
-	var headers strings.Builder
+	var headers bytes.Buffer
 	for _, v := range *r {
-		header := v + "\n"
-		_, err := headers.WriteString(header)
+		_, err := headers.WriteString(v + "\n")
 		if err != nil {
 			log.Errorf("заголовок %q не был записан в буфер: %v", v, err)
 		}
 		log.Infof(v)
 	}
-	return []byte(headers.String() + "\n")
+	headers.WriteByte('\n')
+	return headers.Bytes()
 }
 
 // структура с сформированными данными для строки статуса и заголовков ответа

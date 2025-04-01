@@ -8,6 +8,8 @@ import (
 var infoLog *log.Logger
 var errorLog *log.Logger
 
+const permissions = 0644
+
 // создаем логеры
 func New(logFile string) error {
 	// создаем логеры, пишущие в stdout
@@ -17,7 +19,7 @@ func New(logFile string) error {
 		return nil
 	}
 	// создаем файл для записи лога
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, permissions)
 	if err != nil {
 		return err
 	}
@@ -28,7 +30,7 @@ func New(logFile string) error {
 }
 
 // пишет информационный лог
-func Infof(v ...interface{}) {
+func Infof(v ...any) {
 	// строка лога без аргументов
 	if len(v) == 1 {
 		infoLog.Println(v...)
@@ -43,7 +45,7 @@ func Infof(v ...interface{}) {
 }
 
 // пишет лог ошибки
-func Errorf(v ...interface{}) {
+func Errorf(v ...any) {
 	// строка лога без аргументов
 	if len(v) == 1 {
 		errorLog.Println(v...)

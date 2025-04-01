@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const defaultHeadersNumber = 5
+
 // данные запроса
 type queryData struct {
 	data []byte
@@ -45,7 +47,7 @@ func NewParseQueryData(data []byte) (*queryData, error) {
 	// структура с данными строки запроса HTTP-протокола
 	q := queryString{}
 	// map с заголовками запроса
-	reqhead := make(requestHeaders, 5)
+	reqhead := make(requestHeaders, defaultHeadersNumber)
 
 	// парсим строку запроса в структуру
 	endQueryString, err := q.parseQueryString(data)
@@ -120,7 +122,8 @@ func (r requestHeaders) parseRequestHeaders(data []byte, i int) {
 func trimQueryStringSpace(str string) string {
 	var prev byte
 	var i int
-	// если бы использовали конкатинацию строк, то кол-во перевыделений памяти было бы строго равно кол-во итераций (строку модифицировать нельзя)
+	// если бы использовали конкатенацию строк,
+	// то кол-во перевыделений памяти было бы строго равно кол-ву итераций (строку модифицировать нельзя)
 	// с каждой итерацией объем копирования данных возрастал бы
 	var res strings.Builder // для эффективного прирощения строки используем strings.Builder - по сути срез и append
 	for ; i < len(str); i++ {

@@ -60,7 +60,6 @@ func (c *Connection) ProcessingConn() {
 			err = c.sendResponseHeader(&types.StatusData{
 				Code: consts.StatusBadRequest,
 			}, err)
-			return
 		}
 		log.Errorf(err)
 		return
@@ -104,7 +103,7 @@ func (c *Connection) ProcessingConn() {
 // прочитать из клиентского сокета данные в буфер
 func (c *Connection) readConn() ([]byte, error) {
 	// буфер для чтения из клиентского сокета
-	buf := make([]byte, 4096)
+	buf := make([]byte, consts.BufSize)
 
 	var data []byte
 	// пока клиентский сокет пишет, читаем в буфер
@@ -113,8 +112,8 @@ func (c *Connection) readConn() ([]byte, error) {
 		// обрабатываем ошибку при чтении
 		if err != nil {
 			// не успели вычитать все данные, клиент закрыл сокет
-			if err == io.EOF {
-				err = fmt.Errorf("Клиент преждевременно закрыл соединение: %w", err)
+			if errors.Is(err, io.EOF) {
+				err = fmt.Errorf("клиент преждевременно закрыл соединение: %w", err)
 			}
 			return nil, err
 		}
@@ -141,7 +140,7 @@ func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 		return err
 	}
 	// отправить файл клиенту
-	if err = file.Send(c.conn, f, fi.Size()); err != nil {
+	if err = file.Send(c.conn, f); err != nil {
 		return fmt.Errorf("файл не был отправлен клиенту: %w", err)
 	}
 	return nil
@@ -182,7 +181,7 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 func (c *Connection) openFile(path string) (*os.File, os.FileInfo, error) {
 	var respdata *types.StatusData
 
-	file, err := file.Open(c.conn, path)
+	file, err := file.Open(path)
 	if err != nil {
 		switch {
 		// файл должен быть, иначе 404

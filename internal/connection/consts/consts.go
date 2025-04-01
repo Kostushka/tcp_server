@@ -6,4 +6,6 @@ const (
 	StatusForbidden           = 403
 	StatusNotFound            = 404
 	StatusInternalServerError = 500
+
+	BufSize = 4096
 )

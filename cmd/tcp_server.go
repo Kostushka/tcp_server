@@ -27,12 +27,12 @@ func main() {
 	// парсим шаблон для отображения имен файлов
 	templ, err := os.ReadFile(configData.FileTemplate())
 	if err != nil {
-		log.Fatal("сервер не может быть запущен: %v", err)
+		log.Fatalf("сервер не может быть запущен: %v", err)
 	}
 	// используем шаблон для отображения имен файлов
 	t, err := template.New("index").Parse(string(templ))
 	if err != nil {
-		log.Fatal("сервер не может быть запущен: %v", err)
+		log.Fatalf("сервер не может быть запущен: %v", err)
 	}
 
 	// объявляем структуру с данными будущего сервера
@@ -44,7 +44,7 @@ func main() {
 	// получаем структуру с методами для работы с соединениями
 	l, err := net.ListenTCP("tcp", &laddr)
 	if err != nil {
-		log.Fatal("сервер не может быть запущен: %v", err)
+		log.Fatalf("сервер не может быть запущен: %v", err)
 	}
 	defer connection.Close(l, "")
 

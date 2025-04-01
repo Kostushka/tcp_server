@@ -7,9 +7,11 @@ import (
 )
 
 var (
-	ErrNoRootDir   = errors.New("Не указан путь до *корневого* каталога")
-	ErrInvalidAddr = errors.New("Указан некорректный IP-адрес")
+	ErrNoRootDir   = errors.New("не указан путь до *корневого* каталога")
+	ErrInvalidAddr = errors.New("указан некорректный IP-адрес")
 )
+
+const portNumber = 5000
 
 // данные для конфигурации сервера
 type configData struct {
@@ -48,7 +50,7 @@ func NewConfigData() (*configData, error) {
 
 	// должен быть указан порт, на которм сервер будет принимаь запросы на соединение
 	var port int
-	flag.IntVar(&port, "port", 5000, "a port")
+	flag.IntVar(&port, "port", portNumber, "a port")
 
 	// должно быть указано имя файла для записи лога в него, иначе вывод лога будет в stdout
 	var log string

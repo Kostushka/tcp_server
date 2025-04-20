@@ -1,3 +1,4 @@
+// Package connection - пакет с функциями, которые работают с клиентским соединением
 package connection
 
 import (
@@ -20,14 +21,14 @@ import (
 	"github.com/Kostushka/tcp_server/internal/querydata"
 )
 
-// структура с данными обрабатываемого соединения
+// Connection - структура с данными обрабатываемого соединения
 type Connection struct {
 	conn     *net.TCPConn
 	rootPath string
 	template *template.Template
 }
 
-// создать структуру с данными обрабатываемого соединения
+// New - создать структуру с данными обрабатываемого соединения
 func New(conn *net.TCPConn, rootPath string, template *template.Template) *Connection {
 	return &Connection{
 		conn:     conn,
@@ -36,7 +37,7 @@ func New(conn *net.TCPConn, rootPath string, template *template.Template) *Conne
 	}
 }
 
-// обрабатываем клиентское соединение
+// ProcessingConn - обрабатываем клиентское соединение
 func (c *Connection) ProcessingConn() {
 	// закрыть клиентское соединение
 	defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String()))
@@ -49,6 +50,7 @@ func (c *Connection) ProcessingConn() {
 		// по возвращении клиентским сокетом EOF или другой ошибки логируем ошибку,
 		// так как не успели вычитать все данные, а клиент уже закрыл сокет
 		log.Errorf(err)
+
 		return
 	}
 
@@ -56,12 +58,14 @@ func (c *Connection) ProcessingConn() {
 	query, err := querydata.NewParseQueryData(data)
 	if err != nil {
 		// некорректный запрос
-		if errors.Is(err, querydata.ErrInvalidHttpReq) {
+		if errors.Is(err, querydata.ErrInvalidHTTPReq) {
 			err = c.sendResponseHeader(&types.StatusData{
 				Code: consts.StatusBadRequest,
 			}, err)
 		}
+
 		log.Errorf(err)
+
 		return
 	}
 
@@ -79,6 +83,7 @@ func (c *Connection) ProcessingConn() {
 	f, fi, err := c.openFile(path)
 	if err != nil {
 		log.Errorf(err)
+
 		return
 	}
 
@@ -90,6 +95,7 @@ func (c *Connection) ProcessingConn() {
 	// если файл - каталог, выводим его содержимое
 	if fi.IsDir() {
 		c.workingWithCatalog(query.Path())
+
 		return
 	}
 
@@ -115,6 +121,7 @@ func (c *Connection) readConn() ([]byte, error) {
 			if errors.Is(err, io.EOF) {
 				err = fmt.Errorf("клиент преждевременно закрыл соединение: %w", err)
 			}
+
 			return nil, err
 		}
 		// добавляем к итоговому срезу считанные в буфер данные
@@ -125,9 +132,11 @@ func (c *Connection) readConn() ([]byte, error) {
 			break
 		}
 	}
+
 	return data, nil
 }
 
+// SendFile - отправить клиенту заголовки и файл
 func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 	// отправляем клиенту заголовки
 	err := c.sendResponseHeader(&types.StatusData{
@@ -137,12 +146,14 @@ func (c *Connection) SendFile(f *os.File, fi os.FileInfo) error {
 	}, nil)
 	if err != nil {
 		log.Errorf(err)
+
 		return err
 	}
 	// отправить файл клиенту
 	if err = file.Send(c.conn, f); err != nil {
 		return fmt.Errorf("файл не был отправлен клиенту: %w", err)
 	}
+
 	return nil
 }
 
@@ -156,6 +167,7 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 		// содержимое каталога не готово к отправке - 500
 		err = c.sendInternalServerError(err)
 		log.Errorf("содержимое каталога %q не готово к отправке: %v", filepath.Join(c.rootPath, queryPath), err)
+
 		return
 	}
 	// отправляем заголовки
@@ -166,14 +178,17 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 
 	if err != nil {
 		log.Errorf("не удалось отправить заголовки: %w", err)
+
 		return
 	}
 	// записать содержимое буфера в клиентский сокет
 	_, err = c.conn.Write(buf.Bytes())
 	if err != nil {
 		log.Errorf("содержимое каталога %q не готово к отправке: %v", filepath.Join(c.rootPath, queryPath), err)
+
 		return
 	}
+
 	log.Infof("клиенту отправлен html файл с содержимым каталога %q", filepath.Join(c.rootPath, queryPath))
 }
 
@@ -205,6 +220,7 @@ func (c *Connection) openFile(path string) (*os.File, os.FileInfo, error) {
 		}
 		// отправляем клиенту: ошибка при открытии файла
 		err = c.sendResponseHeader(respdata, err)
+
 		return nil, nil, err
 	}
 	// получить информацию о файле
@@ -212,8 +228,10 @@ func (c *Connection) openFile(path string) (*os.File, os.FileInfo, error) {
 	if err != nil {
 		// файл не отправлен - 500
 		err = c.sendInternalServerError(err)
+
 		return nil, nil, err
 	}
+
 	return file, fi, nil
 }
 
@@ -222,6 +240,7 @@ func (c *Connection) sendInternalServerError(mainError error) error {
 	err := c.sendResponseHeader(&types.StatusData{
 		Code: consts.StatusInternalServerError,
 	}, mainError)
+
 	return err
 }
 
@@ -235,16 +254,19 @@ func (c *Connection) sendResponseHeader(statusData *types.StatusData, mainError 
 	if err := data.WriteResponseHeader(c.conn); err != nil {
 		return fmt.Errorf("%w: %w", err, mainError)
 	}
+
 	return mainError
 }
 
-// закрытие файла или соединения
+// Close - закрытие файла или соединения
 func Close(c io.Closer, m string) {
 	err := c.Close()
 	if err != nil {
 		log.Errorf(err)
+
 		return
 	}
+
 	if m != "" {
 		log.Infof(m)
 	}

@@ -1,3 +1,4 @@
+// Package file - пакет с функциями для работы с файлами
 package file
 
 import (
@@ -9,21 +10,23 @@ import (
 	"github.com/Kostushka/tcp_server/internal/log"
 )
 
-// открываем файл по пути
+// Open - открываем файл по пути
 func Open(path string) (*os.File, error) {
 	// открываем запрашиваемый файл
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec
 
 	if err != nil {
 		return nil, err
 	}
+
 	return f, nil
 }
 
-// отправляем клиенту файл
+// Send - отправляем клиенту файл
 func Send(w io.Writer, f *os.File) error {
 	// читаем файл
-	fileBuf := make([]byte, consts.BufSize) // если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
+	fileBuf := make([]byte, consts.BufSize)
+	// если указать размер буфера больше размера файла, то буфер будет содержать в конце нули
 	// curl и браузер не будут ориентироваться на заголовок Content-Type: - они скажут, что это бинарный файл:
 	// Warning: Binary output can mess up your terminal. Use "--output -" to tell
 	// Warning: curl to output it to your terminal anyway, or consider "--output
@@ -37,6 +40,7 @@ func Send(w io.Writer, f *os.File) error {
 		if errors.Is(err, io.EOF) {
 			break
 		}
+
 		if err != nil {
 			return err
 		}
@@ -46,6 +50,8 @@ func Send(w io.Writer, f *os.File) error {
 			return err
 		}
 	}
+
 	log.Infof("клиенту отправлено тело ответа")
+
 	return nil
 }

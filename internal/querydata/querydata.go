@@ -1,3 +1,4 @@
+// Package querydata - пакет, чтобы парсить данные запроса в структуру со строкой и map с заголовками запроса
 package querydata
 
 import (
@@ -8,19 +9,22 @@ import (
 )
 
 const defaultHeadersNumber = 5
+const parseQueryStrNumber = 3
 
-// данные запроса
-type queryData struct {
+// QueryData - данные запроса
+type QueryData struct {
 	data []byte
 	*queryString
 	parsedReqHeaders requestHeaders
 }
 
-func (q *queryData) Header(key string) string {
+// Header - возвращает значение заголовка по ключу
+func (q *QueryData) Header(key string) string {
 	return q.parsedReqHeaders[key]
 }
 
-var ErrInvalidHttpReq = errors.New("incorrect request format: not HTTP")
+// ErrInvalidHTTPReq - ошибка, обозначающая некорректный формат строки запроса
+var ErrInvalidHTTPReq = errors.New("incorrect request format: not HTTP")
 
 // структура с содержимым строки запроса
 type queryString struct {
@@ -42,8 +46,8 @@ func (q *queryString) Protocol() string {
 // заголовки запроса
 type requestHeaders map[string]string
 
-// создаем структуру со строкой и map с заголовками запроса
-func NewParseQueryData(data []byte) (*queryData, error) {
+// NewParseQueryData - создаем структуру со строкой и map с заголовками запроса
+func NewParseQueryData(data []byte) (*QueryData, error) {
 	// структура с данными строки запроса HTTP-протокола
 	q := queryString{}
 	// map с заголовками запроса
@@ -57,7 +61,7 @@ func NewParseQueryData(data []byte) (*queryData, error) {
 	// парсим заголовки в map
 	reqhead.parseRequestHeaders(data, endQueryString)
 
-	return &queryData{
+	return &QueryData{
 		// записать данные запроса в буфер структуры
 		data:             data,
 		queryString:      &q,
@@ -69,6 +73,7 @@ func NewParseQueryData(data []byte) (*queryData, error) {
 func (q *queryString) parseQueryString(data []byte) (int, error) {
 	// читаем строку из буфера
 	var queryBuf strings.Builder
+
 	var i int
 	// в конце строки ожидаем либо \r\n, либо \n
 	for i = 0; string(data[i]) != "\r" && string(data[i]) != "\n"; i++ {
@@ -80,19 +85,21 @@ func (q *queryString) parseQueryString(data []byte) (int, error) {
 	if string(data[i]) == "\r" {
 		i++
 	}
+
 	i++
 
 	// парсим строку запроса
 	buf := strings.Split(trimQueryStringSpace(queryBuf.String()), " ")
 	// в буфере должно быть 3 элемента: метод, путь, версия протокола
-	if len(buf) < 3 {
-		return 0, fmt.Errorf("не удалось распарсить строку запроса: %w", ErrInvalidHttpReq)
+	if len(buf) < parseQueryStrNumber {
+		return 0, fmt.Errorf("не удалось распарсить строку запроса: %w", ErrInvalidHTTPReq)
 	}
 	// декодируем path на случай, если он не в латинице
 	convertPath, err := url.QueryUnescape(buf[1])
 	if err != nil {
 		return 0, fmt.Errorf("не удалось распарсить строку запроса: %w", err)
 	}
+
 	q.method = buf[0]
 	q.path = convertPath
 	q.protocol = buf[2]
@@ -121,17 +128,21 @@ func (r requestHeaders) parseRequestHeaders(data []byte, i int) {
 // удаляем лишние пробелы
 func trimQueryStringSpace(str string) string {
 	var prev byte
+
 	var i int
 	// если бы использовали конкатенацию строк,
 	// то кол-во перевыделений памяти было бы строго равно кол-ву итераций (строку модифицировать нельзя)
 	// с каждой итерацией объем копирования данных возрастал бы
 	var res strings.Builder // для эффективного прирощения строки используем strings.Builder - по сути срез и append
+
 	for ; i < len(str); i++ {
 		if str[i] == prev && prev == ' ' {
 			continue
 		}
+
 		prev = str[i]
 		res.WriteByte(str[i])
 	}
+
 	return res.String()
 }

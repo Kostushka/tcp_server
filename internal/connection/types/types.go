@@ -1,13 +1,14 @@
+// Package types - пакет со структурами для строки статуса и заголовков ответа
 package types
 
-// строка статуса ответа
+// ResponseStatusLine - строка статуса ответа
 type ResponseStatusLine struct {
 	Version string
 	Status  string
 	Phrase  string
 }
 
-// собираемые данные для строки статуса и заголовков ответа
+// StatusData - собираемые данные для строки статуса и заголовков ответа
 type StatusData struct {
 	Code        int
 	Size        int64
@@ -15,7 +16,7 @@ type StatusData struct {
 	ContentType string
 }
 
-// сформированные данные для строки статуса и заголовков ответа
+// ResponseData - сформированные данные для строки статуса и заголовков ответа
 type ResponseData struct {
 	Status      string
 	Phrase      string

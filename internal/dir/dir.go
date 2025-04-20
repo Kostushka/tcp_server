@@ -1,3 +1,4 @@
+// Package dir - пакет для отправки клиенту содержимого каталога
 package dir
 
 import (
@@ -9,7 +10,7 @@ import (
 	"github.com/Kostushka/tcp_server/internal/log"
 )
 
-// отправляем клиенту содержимое каталога
+// ShowDir - отправляем клиенту содержимое каталога
 func ShowDir(rootPath, queryPath string, t *template.Template) (*bytes.Buffer, error) {
 	type args struct {
 		RootPath string
@@ -21,20 +22,24 @@ func ShowDir(rootPath, queryPath string, t *template.Template) (*bytes.Buffer, e
 	files, err := os.ReadDir(filepath.Join(rootPath, queryPath))
 	if err != nil {
 		log.Errorf(err)
+
 		return nil, err
 	}
 
 	// получаем имена файлов
 	names := []string{}
+
 	for _, v := range files {
 		if v.Name()[0] == '.' {
 			continue
 		}
+
 		names = append(names, v.Name())
 	}
 
 	// если запрос идет на корень, то оставляем переменную с путем запроса пустой,
-	// так как по умолчанию в html шаблоне путь запроса до директории и имена содержащихся в ней файлов/каталогов разделяет слеш
+	// так как по умолчанию в html шаблоне
+	// путь запроса до директории и имена содержащихся в ней файлов/каталогов разделяет слеш
 	if queryPath == "/" {
 		queryPath = ""
 	}

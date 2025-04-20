@@ -1,3 +1,4 @@
+// Package config - пакет для получения конфигурационных данных для запуска сервера
 package config
 
 import (
@@ -7,14 +8,16 @@ import (
 )
 
 var (
-	ErrNoRootDir   = errors.New("не указан путь до *корневого* каталога")
+	// ErrNoRootDir - не указан путь до корневого каталога
+	ErrNoRootDir = errors.New("не указан путь до *корневого* каталога")
+	// ErrInvalidAddr - указан некорректный IP-адрес
 	ErrInvalidAddr = errors.New("указан некорректный IP-адрес")
 )
 
 const portNumber = 5000
 
-// данные для конфигурации сервера
-type configData struct {
+// Data - данные для конфигурации сервера
+type Data struct {
 	rootPath      string
 	listenAddress net.IP
 	port          int
@@ -22,42 +25,56 @@ type configData struct {
 	fileTemplate  string
 }
 
-func (c *configData) RootPath() string {
+// RootPath - возвращает путь до домашнего каталога
+func (c *Data) RootPath() string {
 	return c.rootPath
 }
-func (c *configData) ListenAddress() net.IP {
+
+// ListenAddress - возвращает адрес, на котором будет запущен сервер
+func (c *Data) ListenAddress() net.IP {
 	return c.listenAddress
 }
-func (c *configData) Port() int {
+
+// Port - возвращает порт, на которм сервер будет принимать запросы на соединение
+func (c *Data) Port() int {
 	return c.port
 }
-func (c *configData) Log() string {
+
+// Log - возвращает имя файла для записи лога в него или ”
+func (c *Data) Log() string {
 	return c.log
 }
-func (c *configData) FileTemplate() string {
+
+// FileTemplate - возвращает путь до файла шаблона с отображением имен файлов
+func (c *Data) FileTemplate() string {
 	return c.fileTemplate
 }
 
-// функция-конструктор для получения структуры с конфигурационными данными
-func NewConfigData() (*configData, error) {
+// NewConfigData - функция-конструктор для получения структуры с конфигурационными данными
+func NewConfigData() (*Data, error) {
 	// должен быть указан путь до домашнего каталога
 	var rootPath string
+
 	flag.StringVar(&rootPath, "path", "", "a path to home directory")
 
 	// должен быть указан адрес, на котором будет запущен сервер
 	var listenAddress string
+
 	flag.StringVar(&listenAddress, "IP", "127.0.0.1", "a listening address")
 
-	// должен быть указан порт, на которм сервер будет принимаь запросы на соединение
+	// должен быть указан порт, на которм сервер будет принимать запросы на соединение
 	var port int
+
 	flag.IntVar(&port, "port", portNumber, "a port")
 
 	// должно быть указано имя файла для записи лога в него, иначе вывод лога будет в stdout
 	var log string
+
 	flag.StringVar(&log, "log", "", "output log to file")
 
 	// должен быть указан путь до файла шаблона с отображением имен файлов
 	var fileTemplate string
+
 	flag.StringVar(&fileTemplate, "templ", "./html/filesPage.html", "template for displaying file names")
 
 	flag.Parse()
@@ -73,7 +90,7 @@ func NewConfigData() (*configData, error) {
 		return nil, ErrInvalidAddr
 	}
 
-	return &configData{
+	return &Data{
 		rootPath:      rootPath,
 		listenAddress: addr,
 		port:          port,

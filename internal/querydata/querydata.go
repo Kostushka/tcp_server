@@ -25,7 +25,8 @@ func (q *QueryData) Header(key string) string {
 
 // ErrInvalidHTTPReq - ошибка, обозначающая некорректный формат строки запроса
 var ErrInvalidHTTPReq = errors.New("incorrect request format: not HTTP")
-// ErrInvalidHTTPReq - ошибка, обозначающая некорректный формат заголовка
+
+// ErrInvalidHTTPHead - ошибка, обозначающая некорректный формат заголовка запроса
 var ErrInvalidHTTPHead = errors.New("incorrect header format: not HTTP")
 
 // структура с содержимым строки запроса
@@ -129,9 +130,10 @@ func (r requestHeaders) parseRequestHeaders(data []byte, i int) error {
 		if sepIndex == -1 {
 			return fmt.Errorf("не удалось распарсить заголовок запроса %q: %w", buf[j], ErrInvalidHTTPHead)
 		}
-		
+
 		r[buf[j][:sepIndex]] = strings.TrimSpace(buf[j][sepIndex+1:])
 	}
+
 	return nil
 }
 

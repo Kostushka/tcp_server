@@ -125,7 +125,7 @@ func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders r
 	}
 
 	log.Infof("---")
-	log.Infof(statusString)
+	log.Infof("%s", statusString)
 
 	// сформировать буфер с заголовками ответа
 	headers := respHeaders.ToBytes()

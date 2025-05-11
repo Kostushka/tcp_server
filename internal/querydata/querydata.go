@@ -25,6 +25,8 @@ func (q *QueryData) Header(key string) string {
 
 // ErrInvalidHTTPReq - ошибка, обозначающая некорректный формат строки запроса
 var ErrInvalidHTTPReq = errors.New("incorrect request format: not HTTP")
+// ErrInvalidHTTPReq - ошибка, обозначающая некорректный формат заголовка
+var ErrInvalidHTTPHead = errors.New("incorrect header format: not HTTP")
 
 // структура с содержимым строки запроса
 type queryString struct {
@@ -59,7 +61,10 @@ func NewParseQueryData(data []byte) (*QueryData, error) {
 		return nil, err
 	}
 	// парсим заголовки в map
-	reqhead.parseRequestHeaders(data, endQueryString)
+	err = reqhead.parseRequestHeaders(data, endQueryString)
+	if err != nil {
+		return nil, err
+	}
 
 	return &QueryData{
 		// записать данные запроса в буфер структуры
@@ -108,9 +113,10 @@ func (q *queryString) parseQueryString(data []byte) (int, error) {
 }
 
 // парсим заголовки в map
-func (r requestHeaders) parseRequestHeaders(data []byte, i int) {
+func (r requestHeaders) parseRequestHeaders(data []byte, i int) error {
 	// парсим заголовки
 	headerBuf := data[i:]
+
 	buf := strings.Split(string(headerBuf), "\r\n")
 	// если в конце строки не \r\n, а \n
 	if len(buf) == 1 {
@@ -119,12 +125,14 @@ func (r requestHeaders) parseRequestHeaders(data []byte, i int) {
 	// в конце после заголовков ожидаем пустую строку
 	for j := 0; buf[j] != ""; j++ {
 		sepIndex := strings.Index(buf[j], ":")
+
 		if sepIndex == -1 {
-			fmt.Errorf("некорректный формат заголовка: %s", buf[j])
-			continue
+			return fmt.Errorf("не удалось распарсить заголовок запроса %q: %w", buf[j], ErrInvalidHTTPHead)
 		}
+		
 		r[buf[j][:sepIndex]] = strings.TrimSpace(buf[j][sepIndex+1:])
 	}
+	return nil
 }
 
 // учитываем, что строка запроса может содержать более одного пробела, например:

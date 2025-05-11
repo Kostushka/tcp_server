@@ -116,7 +116,7 @@ func (h *HeaderData) WriteResponseHeader(w io.Writer) error {
 // пишем заголовки в клиентский сокет
 func writeToConn(w io.Writer, respStatus types.ResponseStatusLine, respHeaders responseHeaders) error {
 	// сформировать статусную строку
-	var statusString = respStatus.Version + " " + respStatus.Status + " " + respStatus.Phrase
+	var statusString = respStatus.Version + " " + respStatus.Status + " " + respStatus.Phrase + "\n"
 
 	// записать в клиентский сокет статусную строку
 	_, err := w.Write([]byte(statusString))

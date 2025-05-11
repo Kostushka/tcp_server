@@ -119,6 +119,10 @@ func (r requestHeaders) parseRequestHeaders(data []byte, i int) {
 	// в конце после заголовков ожидаем пустую строку
 	for j := 0; buf[j] != ""; j++ {
 		sepIndex := strings.Index(buf[j], ":")
+		if sepIndex == -1 {
+			fmt.Errorf("некорректный формат заголовка: %s", buf[j])
+			continue
+		}
 		r[buf[j][:sepIndex]] = strings.TrimSpace(buf[j][sepIndex+1:])
 	}
 }

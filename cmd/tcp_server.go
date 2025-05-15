@@ -59,7 +59,7 @@ func main() {
 			mlog.Errorf(err)
 		}
 
-		mlog.Infof("запрос на соединение от клиента %s принят", conn.RemoteAddr().String())
+		mlog.Infof("запрос на соединение от клиента принят")
 
 		// создаем структуру с данными клиентского соединения и обрабатываем каждое клиентское соединение в отдельной горутине
 		go connection.New(conn, configData.RootPath(), t).ProcessingConn()

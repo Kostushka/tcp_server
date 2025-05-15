@@ -39,11 +39,6 @@ func New(conn *net.TCPConn, rootPath string, template *template.Template) *Conne
 
 // ProcessingConn - обрабатываем клиентское соединение
 func (c *Connection) ProcessingConn() {
-	// закрыть клиентское соединение
-	defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String()))
-
-	log.Infof("начинается работа с клиентским сокетом %s", c.conn.RemoteAddr().String())
-
 	// получить данные запроса
 	data, err := c.readConn()
 	if err != nil {
@@ -69,12 +64,15 @@ func (c *Connection) ProcessingConn() {
 		return
 	}
 
-	// логируем клиентские заголовки
-	log.Infof("распарсили данные, поступившие от клиента:")
+	// закрыть клиентское соединение
+	if query.Header("X-Forwarded-For") != "" {
+		defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", query.Header("X-Forwarded-For")))
+	} else {
+		defer Close(c.conn, fmt.Sprintf("клиентское соединение %s закрыто", c.conn.RemoteAddr().String()))
+	}
 
-	log.Infof("\"%v %v %v\" %v %v \"%v\"\n",
-		query.Method(), query.Path(), query.Protocol(), c.conn.RemoteAddr().String(),
-		query.Header("Host"), query.Header("User-Agent"))
+	// логируем клиентские заголовки
+	logsReqHeaders(c.conn, query)
 
 	// работаем с путем до файла, взятым из строки запроса
 	path := filepath.Join(c.rootPath, query.Path())
@@ -177,7 +175,7 @@ func (c *Connection) workingWithCatalog(queryPath string) {
 		ContentType: "text/html"}, nil)
 
 	if err != nil {
-		log.Errorf("не удалось отправить заголовки: %w", err)
+		log.Errorf("не удалось отправить заголовки: %v", err)
 
 		return
 	}
@@ -270,4 +268,26 @@ func Close(c io.Closer, m string) {
 	if m != "" {
 		log.Infof(m)
 	}
+}
+
+// залогировать начало работы с клиентским соединением с учетом заголовков запроса
+func logsReqHeaders(conn *net.TCPConn, query *querydata.QueryData) {
+	cliSocket := query.Header("X-Forwarded-For")
+	if cliSocket == "" {
+		cliSocket = conn.RemoteAddr().String()
+	}
+
+	host := query.Header("X-Forwarded-Host")
+	if host == "" {
+		host = query.Header("Host")
+	}
+
+	log.Infof("начинается работа с клиентским сокетом %s", cliSocket)
+
+	// логируем клиентские заголовки
+	log.Infof("распарсили данные, поступившие от клиента:")
+
+	log.Infof("\"%v %v %v\" %v %v \"%v\"\n",
+		query.Method(), query.Path(), query.Protocol(), cliSocket,
+		host, query.Header("User-Agent"))
 }
